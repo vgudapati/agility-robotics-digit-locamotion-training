@@ -4,7 +4,7 @@
 This script trains a locomotion policy for the Agility Robotics Digit
 robot using Isaac Lab and RSL-RL's PPO implementation.
 
-Usage:
+Usage (Linux/macOS):
     # Train on flat terrain (recommended for initial training)
     ./isaaclab.sh -p scripts/train.py --task Digit-Velocity-Flat-v0
 
@@ -15,8 +15,19 @@ Usage:
     ./isaaclab.sh -p scripts/train.py --task Digit-Velocity-Flat-v0 \
         --num_envs 4096 --max_iterations 20000 --headless
 
+Usage (Windows):
+    # Train on flat terrain
+    isaaclab.bat -p scripts\\train.py --task Digit-Velocity-Flat-v0
+
+    # Train on rough terrain
+    isaaclab.bat -p scripts\\train.py --task Digit-Velocity-Rough-v0
+
+    # Train with custom settings
+    isaaclab.bat -p scripts\\train.py --task Digit-Velocity-Flat-v0 ^
+        --num_envs 4096 --max_iterations 20000 --headless
+
     # Resume training from checkpoint
-    ./isaaclab.sh -p scripts/train.py --task Digit-Velocity-Flat-v0 \
+    isaaclab.bat -p scripts\\train.py --task Digit-Velocity-Flat-v0 ^
         --resume --load_run <run_name>
 """
 

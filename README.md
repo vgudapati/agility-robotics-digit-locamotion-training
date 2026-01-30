@@ -13,6 +13,7 @@ This project provides a complete framework for training reinforcement learning p
 - **Domain Randomization**: Comprehensive randomization for robust sim-to-real transfer
 - **Terrain Curriculum**: Progressive training from flat to rough terrain
 - **Modular Design**: Easy to customize rewards, observations, and training parameters
+- **Cross-Platform**: Runs on both Linux and Windows
 
 ## Prerequisites
 
@@ -37,6 +38,8 @@ Download and install Isaac Sim through the [NVIDIA Omniverse Launcher](https://w
 
 ### 2. Install Isaac Lab
 
+#### Linux
+
 ```bash
 # Clone Isaac Lab
 git clone https://github.com/isaac-sim/IsaacLab.git
@@ -49,7 +52,26 @@ cd IsaacLab
 conda activate isaaclab
 ```
 
+#### Windows
+
+```powershell
+# Clone Isaac Lab
+git clone https://github.com/isaac-sim/IsaacLab.git
+cd IsaacLab
+
+# Install Isaac Lab (creates conda environment)
+.\isaaclab.bat --install
+
+# Activate the environment
+conda activate isaaclab
+
+# Set environment variable (add to your profile for persistence)
+$env:ISAACLAB_PATH = "C:\path\to\IsaacLab"
+```
+
 ### 3. Install This Project
+
+#### Linux
 
 ```bash
 # Clone this repository
@@ -63,11 +85,27 @@ pip install -e source/digit_locomotion
 python -c "import digit_locomotion; print('Installation successful!')"
 ```
 
+#### Windows
+
+```powershell
+# Clone this repository
+git clone https://github.com/your-org/agility-robotics-digit-locamotion-training.git
+cd agility-robotics-digit-locamotion-training
+
+# Install the extension
+pip install -e source\digit_locomotion
+
+# Verify installation
+python -c "import digit_locomotion; print('Installation successful!')"
+```
+
 ## Quick Start
 
 ### Train on Flat Terrain
 
-Start with flat terrain training to establish basic walking:
+Start with flat terrain training to establish basic walking.
+
+#### Linux
 
 ```bash
 # From the IsaacLab directory
@@ -77,9 +115,27 @@ Start with flat terrain training to establish basic walking:
     --headless
 ```
 
+#### Windows (PowerShell)
+
+```powershell
+# Using the convenience script
+.\scripts\train.ps1 -Task Digit-Velocity-Flat-v0 -NumEnvs 4096 -Headless
+
+# Or using isaaclab.bat directly
+isaaclab.bat -p scripts\train.py --task Digit-Velocity-Flat-v0 --num_envs 4096 --headless
+```
+
+#### Windows (Command Prompt)
+
+```cmd
+scripts\train.bat --task Digit-Velocity-Flat-v0 --num_envs 4096 --headless
+```
+
 ### Train on Rough Terrain
 
-Once flat terrain training converges, train on rough terrain for robustness:
+Once flat terrain training converges, train on rough terrain for robustness.
+
+#### Linux
 
 ```bash
 ./isaaclab.sh -p /path/to/this/repo/scripts/train.py \
@@ -88,7 +144,15 @@ Once flat terrain training converges, train on rough terrain for robustness:
     --headless
 ```
 
+#### Windows
+
+```powershell
+.\scripts\train.ps1 -Task Digit-Velocity-Rough-v0 -NumEnvs 4096 -Headless
+```
+
 ### Evaluate a Trained Policy
+
+#### Linux
 
 ```bash
 ./isaaclab.sh -p /path/to/this/repo/scripts/play.py \
@@ -97,13 +161,43 @@ Once flat terrain training converges, train on rough terrain for robustness:
     --num_envs 16
 ```
 
+#### Windows
+
+```powershell
+isaaclab.bat -p scripts\play.py --task Digit-Velocity-Flat-v0 ^
+    --checkpoint logs\digit_flat\model_15000.pt --num_envs 16
+```
+
 ### Export Policy for Deployment
 
 ```bash
+# Works on both Linux and Windows
 python scripts/export_policy.py \
     --checkpoint logs/digit_flat/model_15000.pt \
     --output policies/digit_walking.onnx \
     --verify
+```
+
+## Docker (Recommended for Reproducibility)
+
+Docker provides a consistent environment across platforms. See [docker/README.md](docker/README.md) for detailed instructions.
+
+### Quick Docker Start
+
+#### Linux
+
+```bash
+# Build and train
+docker compose -f docker/docker-compose.yml build
+docker compose -f docker/docker-compose.yml run train-flat
+```
+
+#### Windows (with Docker Desktop + WSL2)
+
+```powershell
+# Ensure Docker Desktop is running with WSL2 backend and GPU support enabled
+docker compose -f docker/docker-compose.yml build
+docker compose -f docker/docker-compose.yml run train-flat
 ```
 
 ## Project Structure
@@ -112,8 +206,15 @@ python scripts/export_policy.py \
 agility-robotics-digit-locamotion-training/
 ├── scripts/
 │   ├── train.py              # Training entry point
+│   ├── train.bat             # Windows batch launcher
+│   ├── train.ps1             # Windows PowerShell launcher
 │   ├── play.py               # Policy evaluation
+│   ├── play.bat              # Windows batch launcher
 │   └── export_policy.py      # ONNX export for deployment
+├── docker/
+│   ├── Dockerfile            # Container definition
+│   ├── docker-compose.yml    # Service definitions
+│   └── README.md             # Docker documentation
 ├── source/digit_locomotion/
 │   └── digit_locomotion/
 │       ├── assets/

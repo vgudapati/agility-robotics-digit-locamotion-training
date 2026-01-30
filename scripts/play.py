@@ -4,7 +4,7 @@
 This script loads a trained policy and runs it in the simulation
 environment for visualization and evaluation.
 
-Usage:
+Usage (Linux/macOS):
     # Play with a trained checkpoint
     ./isaaclab.sh -p scripts/play.py --task Digit-Velocity-Flat-v0 \
         --checkpoint logs/digit_flat/model_10000.pt
@@ -16,6 +16,15 @@ Usage:
     # Record video
     ./isaaclab.sh -p scripts/play.py --task Digit-Velocity-Flat-v0 \
         --checkpoint logs/digit_flat/model_10000.pt --video --video_length 300
+
+Usage (Windows):
+    # Play with a trained checkpoint
+    isaaclab.bat -p scripts\\play.py --task Digit-Velocity-Flat-v0 ^
+        --checkpoint logs\\digit_flat\\model_10000.pt
+
+    # Play with visualization
+    isaaclab.bat -p scripts\\play.py --task Digit-Velocity-Flat-v0 ^
+        --checkpoint logs\\digit_flat\\model_10000.pt --num_envs 16
 """
 
 from __future__ import annotations
