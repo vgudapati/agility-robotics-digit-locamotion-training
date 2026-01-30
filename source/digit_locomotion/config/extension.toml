@@ -1,0 +1,12 @@
+[package]
+version = "0.1.0"
+title = "Digit Locomotion Training"
+description = "Isaac Lab extension for training locomotion policies for Agility Robotics Digit"
+authors = ["Agility Robotics Locomotion Team"]
+repository = ""
+category = "Robotics"
+keywords = ["digit", "locomotion", "reinforcement learning", "humanoid"]
+
+[dependencies]
+"omni.isaac.lab" = {}
+"omni.isaac.lab_tasks" = {}

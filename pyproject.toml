@@ -1,0 +1,41 @@
+[project]
+name = "digit-locomotion"
+version = "0.1.0"
+description = "Locomotion training for Agility Robotics Digit using Isaac Lab"
+readme = "README.md"
+license = {text = "MIT"}
+requires-python = ">=3.10,<3.12"
+authors = [
+    {name = "Agility Robotics Locomotion Team"}
+]
+keywords = ["robotics", "reinforcement-learning", "locomotion", "isaac-sim", "digit"]
+
+dependencies = [
+    "torch>=2.0.0",
+    "numpy>=1.20.0",
+    "gymnasium>=0.29.0",
+    "tensorboard",
+    "matplotlib",
+]
+
+[project.optional-dependencies]
+rsl_rl = ["rsl-rl>=2.0.0"]
+skrl = ["skrl>=1.0.0"]
+rl_games = ["rl-games>=1.6.0"]
+export = ["onnx", "onnxruntime"]
+dev = ["pytest", "black", "isort", "mypy"]
+
+[build-system]
+requires = ["setuptools>=61.0", "wheel"]
+build-backend = "setuptools.build_meta"
+
+[tool.setuptools.packages.find]
+where = ["source/digit_locomotion"]
+
+[tool.black]
+line-length = 100
+target-version = ["py310", "py311"]
+
+[tool.isort]
+profile = "black"
+line_length = 100

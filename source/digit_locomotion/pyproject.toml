@@ -1,0 +1,19 @@
+[build-system]
+requires = ["setuptools>=61.0", "wheel"]
+build-backend = "setuptools.build_meta"
+
+[project]
+name = "digit_locomotion"
+version = "0.1.0"
+description = "Isaac Lab extension for Digit robot locomotion training"
+readme = "README.md"
+requires-python = ">=3.10,<3.12"
+
+dependencies = []
+
+[project.entry-points."isaaclab.envs"]
+digit_locomotion = "digit_locomotion"
+
+[tool.setuptools.packages.find]
+where = ["."]
+include = ["digit_locomotion*"]

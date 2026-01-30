@@ -1,0 +1,149 @@
+# Docker Compose for Digit Locomotion Training
+#
+# This file defines services for training and evaluating locomotion policies.
+#
+# Usage:
+#   # Build the images
+#   docker compose -f docker/docker-compose.yml build
+#
+#   # Train on flat terrain (headless)
+#   docker compose -f docker/docker-compose.yml run train-flat
+#
+#   # Train on rough terrain
+#   docker compose -f docker/docker-compose.yml run train-rough
+#
+#   # Interactive development
+#   docker compose -f docker/docker-compose.yml run dev
+#
+#   # View training with TensorBoard
+#   docker compose -f docker/docker-compose.yml up tensorboard
+
+version: "3.8"
+
+services:
+  # Base service configuration (not meant to be run directly)
+  base:
+    build:
+      context: ..
+      dockerfile: docker/Dockerfile
+      target: base
+    image: digit-locomotion:latest
+    deploy:
+      resources:
+        reservations:
+          devices:
+            - driver: nvidia
+              count: all
+              capabilities: [gpu]
+    volumes:
+      - ../logs:/workspace/logs
+      - ../checkpoints:/workspace/checkpoints
+      - ../policies:/workspace/policies
+      - ../videos:/workspace/videos
+    environment:
+      - NVIDIA_VISIBLE_DEVICES=all
+      - NVIDIA_DRIVER_CAPABILITIES=all
+    shm_size: "16gb"
+    ulimits:
+      memlock: -1
+      stack: 67108864
+
+  # Training on flat terrain
+  train-flat:
+    extends: base
+    command: >
+      bash -c "
+        $${ISAAC_SIM_PATH}/python.sh scripts/train.py
+        --task Digit-Velocity-Flat-v0
+        --num_envs 4096
+        --max_iterations 15000
+        --headless
+      "
+
+  # Training on rough terrain
+  train-rough:
+    extends: base
+    command: >
+      bash -c "
+        $${ISAAC_SIM_PATH}/python.sh scripts/train.py
+        --task Digit-Velocity-Rough-v0
+        --num_envs 4096
+        --max_iterations 30000
+        --headless
+      "
+
+  # Resume training from checkpoint
+  train-resume:
+    extends: base
+    command: >
+      bash -c "
+        $${ISAAC_SIM_PATH}/python.sh scripts/train.py
+        --task Digit-Velocity-Flat-v0
+        --num_envs 4096
+        --resume
+        --headless
+      "
+
+  # Policy evaluation (requires display)
+  evaluate:
+    extends: base
+    environment:
+      - DISPLAY=${DISPLAY:-:0}
+    volumes:
+      - ../logs:/workspace/logs
+      - ../checkpoints:/workspace/checkpoints
+      - ../policies:/workspace/policies
+      - ../videos:/workspace/videos
+      - /tmp/.X11-unix:/tmp/.X11-unix:rw
+    command: >
+      bash -c "
+        $${ISAAC_SIM_PATH}/python.sh scripts/play.py
+        --task Digit-Velocity-Flat-v0
+        --checkpoint logs/digit_flat/model_15000.pt
+        --num_envs 16
+      "
+
+  # Interactive development environment
+  dev:
+    extends: base
+    build:
+      context: ..
+      dockerfile: docker/Dockerfile
+      target: dev
+    image: digit-locomotion:dev
+    stdin_open: true
+    tty: true
+    environment:
+      - DISPLAY=${DISPLAY:-:0}
+    volumes:
+      - ..:/workspace
+      - /tmp/.X11-unix:/tmp/.X11-unix:rw
+    ports:
+      - "8888:8888"  # JupyterLab
+    command: /bin/bash
+
+  # TensorBoard for monitoring training
+  tensorboard:
+    image: tensorflow/tensorflow:latest
+    ports:
+      - "6006:6006"
+    volumes:
+      - ../logs:/logs:ro
+    command: tensorboard --logdir=/logs --host=0.0.0.0 --port=6006
+
+  # Export policy to ONNX
+  export:
+    extends: base
+    command: >
+      bash -c "
+        python scripts/export_policy.py
+        --checkpoint logs/digit_flat/model_15000.pt
+        --output policies/digit_walking.onnx
+        --verify
+      "
+
+# Named volumes for persistent data
+volumes:
+  logs:
+  checkpoints:
+  policies:

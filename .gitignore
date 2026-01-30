@@ -205,3 +205,21 @@ cython_debug/
 marimo/_static/
 marimo/_lsp/
 __marimo__/
+
+# Isaac Lab / Training artifacts
+logs/
+checkpoints/
+videos/
+policies/*.onnx
+wandb/
+outputs/
+
+# Isaac Sim cache
+.thumbs/
+_isaac_sim/
+
+# Large model files
+*.pt
+*.pth
+*.onnx
+!policies/.gitkeep

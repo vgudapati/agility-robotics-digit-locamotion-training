@@ -1,0 +1,52 @@
+# Git
+.git
+.gitignore
+
+# Python
+__pycache__
+*.py[cod]
+*$py.class
+*.so
+.Python
+*.egg-info
+.eggs
+*.egg
+
+# Virtual environments
+.env
+.venv
+env/
+venv/
+
+# IDE
+.idea/
+.vscode/
+*.swp
+*.swo
+
+# Training artifacts (will be mounted as volumes)
+logs/
+checkpoints/
+videos/
+policies/*.onnx
+wandb/
+outputs/
+
+# Large files
+*.pt
+*.pth
+*.onnx
+
+# Documentation
+docs/
+*.md
+!README.md
+
+# Tests
+tests/
+.pytest_cache/
+.coverage
+
+# Isaac Sim cache
+.thumbs/
+_isaac_sim/
