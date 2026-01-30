@@ -4,27 +4,25 @@
 This script loads a trained policy and runs it in the simulation
 environment for visualization and evaluation.
 
-Usage (Linux/macOS):
-    # Play with a trained checkpoint
-    ./isaaclab.sh -p scripts/play.py --task Digit-Velocity-Flat-v0 \
-        --checkpoint logs/digit_flat/model_10000.pt
+Usage (Windows PowerShell):
+    # IMPORTANT: In PowerShell, use .\\ prefix and deactivate conda first
+    cd C:\\IsaacLab
+    $env:CONDA_PREFIX = ""
 
-    # Play with visualization (not headless)
-    ./isaaclab.sh -p scripts/play.py --task Digit-Velocity-Flat-v0 \
-        --checkpoint logs/digit_flat/model_10000.pt --num_envs 16
+    # Play with visualization (4 robots)
+    .\\isaaclab.bat -p c:\\path\\to\\scripts\\play.py --num_envs 4
 
-    # Record video
-    ./isaaclab.sh -p scripts/play.py --task Digit-Velocity-Flat-v0 \
-        --checkpoint logs/digit_flat/model_10000.pt --video --video_length 300
+    # Headless evaluation (faster)
+    .\\isaaclab.bat -p c:\\path\\to\\scripts\\play.py --headless --num_envs 64
 
-Usage (Windows):
-    # Play with a trained checkpoint
-    isaaclab.bat -p scripts\\play.py --task Digit-Velocity-Flat-v0 ^
-        --checkpoint logs\\digit_flat\\model_10000.pt
+Usage (Windows Command Prompt):
+    cd C:\\IsaacLab
+    set CONDA_PREFIX=
+    isaaclab.bat -p c:\\path\\to\\scripts\\play.py --num_envs 4
 
-    # Play with visualization
-    isaaclab.bat -p scripts\\play.py --task Digit-Velocity-Flat-v0 ^
-        --checkpoint logs\\digit_flat\\model_10000.pt --num_envs 16
+Usage (Linux):
+    cd /path/to/IsaacLab
+    ./isaaclab.sh -p /path/to/scripts/play.py --num_envs 4
 """
 
 from __future__ import annotations
@@ -71,27 +69,8 @@ def parse_args():
     parser.add_argument(
         "--checkpoint",
         type=str,
-        required=True,
+        default="C:/IsaacLab/logs/digit_flat/final_model.pt",
         help="Path to the trained policy checkpoint",
-    )
-
-    # Video recording
-    parser.add_argument(
-        "--video",
-        action="store_true",
-        help="Record video of evaluation",
-    )
-    parser.add_argument(
-        "--video_length",
-        type=int,
-        default=200,
-        help="Length of video in steps",
-    )
-    parser.add_argument(
-        "--video_dir",
-        type=str,
-        default="videos",
-        help="Directory to save videos",
     )
 
     # Add Isaac Sim launcher arguments
@@ -110,7 +89,8 @@ simulation_app = app_launcher.app
 import gymnasium as gym
 import torch
 
-from isaaclab_rl.rsl_rl import RslRlVecEnvWrapper
+from isaaclab_rl.rsl_rl import RslRlOnPolicyRunnerCfg, RslRlVecEnvWrapper
+from isaaclab_tasks.utils.parse_cfg import parse_env_cfg, load_cfg_from_registry
 
 # Import to register environments
 import digit_locomotion  # noqa: F401
@@ -121,46 +101,47 @@ def main():
     # Set random seed
     torch.manual_seed(args.seed)
 
-    # Create environment
-    env = gym.make(
+    # Parse environment configuration from registry
+    env_cfg = parse_env_cfg(
         args.task,
-        cfg={"num_envs": args.num_envs},
+        device=args.device,
+        num_envs=args.num_envs,
     )
+
+    # Create the environment with parsed config
+    env = gym.make(args.task, cfg=env_cfg)
+
+    # Wrap environment for RSL-RL
     env = RslRlVecEnvWrapper(env)
 
-    # Load the trained policy
-    print(f"\nLoading policy from: {args.checkpoint}")
+    # Load agent configuration from registry
+    agent_cfg: RslRlOnPolicyRunnerCfg = load_cfg_from_registry(args.task, "rsl_rl_cfg_entry_point")
 
-    # Check if checkpoint exists
+    # Import RSL-RL runner
+    from rsl_rl.runners import OnPolicyRunner
+
+    # Create a temporary log directory
+    log_dir = os.path.join(os.path.dirname(args.checkpoint), "play_logs")
+    os.makedirs(log_dir, exist_ok=True)
+
+    # Create the runner
+    runner = OnPolicyRunner(
+        env=env,
+        train_cfg=agent_cfg.to_dict(),
+        log_dir=log_dir,
+        device=env.device,
+    )
+
+    # Load the checkpoint
+    print(f"\nLoading policy from: {args.checkpoint}")
     if not os.path.exists(args.checkpoint):
         raise FileNotFoundError(f"Checkpoint not found: {args.checkpoint}")
 
-    # Load as JIT model or state dict
-    if args.checkpoint.endswith(".pt"):
-        policy = torch.jit.load(args.checkpoint, map_location=env.device)
-    else:
-        # Assume it's a state dict - need to reconstruct the model
-        from rsl_rl.modules import ActorCritic
+    runner.load(args.checkpoint)
+    print("Checkpoint loaded successfully!")
 
-        # Get observation and action dimensions
-        obs_dim = env.observation_space.shape[0]
-        act_dim = env.action_space.shape[0]
-
-        # Create model with same architecture as training
-        policy = ActorCritic(
-            num_actor_obs=obs_dim,
-            num_critic_obs=obs_dim,
-            num_actions=act_dim,
-            actor_hidden_dims=[512, 256, 128],
-            critic_hidden_dims=[512, 256, 128],
-            activation="elu",
-        ).to(env.device)
-
-        # Load weights
-        checkpoint = torch.load(args.checkpoint, map_location=env.device)
-        policy.load_state_dict(checkpoint["model_state_dict"])
-
-    policy.eval()
+    # Get the inference policy
+    policy = runner.get_inference_policy(device=env.device)
 
     # Print info
     print("\n" + "=" * 60)
@@ -169,67 +150,54 @@ def main():
     print(f"Task: {args.task}")
     print(f"Number of environments: {env.num_envs}")
     print(f"Checkpoint: {args.checkpoint}")
-    print("=" * 60 + "\n")
+    print(f"Device: {env.device}")
+    print("=" * 60)
+    print("\nRunning policy... Press Ctrl+C to stop\n")
 
-    # Setup video recording if requested
-    video_writer = None
-    if args.video:
-        os.makedirs(args.video_dir, exist_ok=True)
-        video_path = os.path.join(
-            args.video_dir,
-            f"digit_eval_{os.path.basename(args.checkpoint).split('.')[0]}.mp4"
-        )
-        print(f"Recording video to: {video_path}")
-
-    # Reset environment
-    obs, _ = env.reset()
+    # Get initial observations
+    obs = env.get_observations()
 
     # Evaluation loop
     step = 0
     episode_rewards = torch.zeros(env.num_envs, device=env.device)
     episode_lengths = torch.zeros(env.num_envs, device=env.device)
 
-    print("Starting evaluation...")
-    print("Press Ctrl+C to stop\n")
-
     try:
         while simulation_app.is_running():
             # Get action from policy
             with torch.no_grad():
-                actions = policy.act(obs)
+                actions = policy(obs)
 
             # Step environment
-            obs, rewards, dones, truncated, infos = env.step(actions)
+            obs, rewards, dones, infos = env.step(actions)
 
             # Track metrics
             episode_rewards += rewards
             episode_lengths += 1
 
-            # Print stats on episode end
-            done_envs = dones.nonzero(as_tuple=False).squeeze(-1)
-            if len(done_envs) > 0:
-                mean_reward = episode_rewards[done_envs].mean().item()
-                mean_length = episode_lengths[done_envs].mean().item()
-                print(f"Step {step}: Completed episodes - "
-                      f"Mean reward: {mean_reward:.2f}, "
-                      f"Mean length: {mean_length:.0f}")
+            # Print stats periodically
+            if step % 50 == 0:
+                print(f"Step {step}: Mean reward = {rewards.mean().item():.4f}")
 
+            # Print stats on episode end
+            done_indices = dones.nonzero(as_tuple=False).squeeze(-1)
+            if len(done_indices) > 0:
+                for idx in done_indices:
+                    idx = idx.item()
+                    print(f"  Episode finished (env {idx}): "
+                          f"reward = {episode_rewards[idx].item():.2f}, "
+                          f"length = {episode_lengths[idx].item():.0f}")
                 # Reset tracked metrics for completed episodes
-                episode_rewards[done_envs] = 0
-                episode_lengths[done_envs] = 0
+                episode_rewards[done_indices] = 0
+                episode_lengths[done_indices] = 0
 
             step += 1
 
-            # Check if we should stop for video recording
-            if args.video and step >= args.video_length:
-                print(f"\nReached video length ({args.video_length} steps)")
-                break
-
     except KeyboardInterrupt:
-        print("\nEvaluation stopped by user")
+        print("\n\nEvaluation stopped by user")
 
     # Cleanup
-    print("\nCleaning up...")
+    print(f"\nTotal steps: {step}")
     env.close()
     simulation_app.close()
 

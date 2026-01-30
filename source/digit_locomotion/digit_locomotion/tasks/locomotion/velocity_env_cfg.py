@@ -14,7 +14,7 @@ from __future__ import annotations
 import math
 
 import isaaclab.sim as sim_utils
-from isaaclab.assets import ArticulationCfg
+from isaaclab.assets import ArticulationCfg, AssetBaseCfg
 from isaaclab.envs import ManagerBasedRLEnvCfg
 from isaaclab.managers import (
     CurriculumTermCfg,
@@ -27,15 +27,22 @@ from isaaclab.managers import (
 )
 from isaaclab.scene import InteractiveSceneCfg
 from isaaclab.sensors import ContactSensorCfg
-from isaaclab.terrains import TerrainImporterCfg
+from isaaclab.terrains import (
+    TerrainImporterCfg,
+    TerrainGeneratorCfg,
+    HfRandomUniformTerrainCfg,
+    MeshPlaneTerrainCfg,
+    MeshPyramidStairsTerrainCfg,
+    MeshInvertedPyramidStairsTerrainCfg,
+)
 from isaaclab.utils import configclass
 from isaaclab.utils.noise import AdditiveUniformNoiseCfg, AdditiveGaussianNoiseCfg
 
-# Import MDP components
-import isaaclab.envs.mdp as mdp
+# Import MDP components (using locomotion-specific mdp with extra reward functions)
+import isaaclab_tasks.manager_based.locomotion.velocity.mdp as mdp
 
-# Import Digit robot configuration
-from digit_locomotion.assets.digit import DIGIT_CFG
+# Import Digit robot configuration from isaaclab_assets
+from isaaclab_assets.robots.agility import DIGIT_V4_CFG as DIGIT_CFG
 
 
 # =============================================================================
@@ -71,9 +78,12 @@ class DigitSceneCfg(InteractiveSceneCfg):
     )
 
     # Lights
-    sky_light = sim_utils.DomeLightCfg(
-        intensity=750.0,
-        color=(0.9, 0.9, 0.9),
+    sky_light = AssetBaseCfg(
+        prim_path="/World/skyLight",
+        spawn=sim_utils.DomeLightCfg(
+            intensity=750.0,
+            color=(0.9, 0.9, 0.9),
+        ),
     )
 
 
@@ -84,7 +94,7 @@ class DigitRoughSceneCfg(DigitSceneCfg):
     terrain = TerrainImporterCfg(
         prim_path="/World/ground",
         terrain_type="generator",
-        terrain_generator=sim_utils.TerrainGeneratorCfg(
+        terrain_generator=TerrainGeneratorCfg(
             seed=42,
             size=(8.0, 8.0),
             border_width=20.0,
@@ -96,19 +106,19 @@ class DigitRoughSceneCfg(DigitSceneCfg):
             curriculum=True,
             difficulty_range=(0.0, 1.0),
             sub_terrains={
-                "flat": sim_utils.FlatTerrainCfg(proportion=0.2),
-                "random_rough": sim_utils.HfRandomUniformTerrainCfg(
+                "flat": MeshPlaneTerrainCfg(proportion=0.2),
+                "random_rough": HfRandomUniformTerrainCfg(
                     proportion=0.3,
                     noise_range=(0.01, 0.06),
                     noise_step=0.01,
                 ),
-                "pyramid_stairs": sim_utils.MeshPyramidStairsTerrainCfg(
+                "pyramid_stairs": MeshPyramidStairsTerrainCfg(
                     proportion=0.25,
                     step_height_range=(0.05, 0.15),
                     step_width=0.3,
                     platform_width=3.0,
                 ),
-                "pyramid_stairs_inv": sim_utils.MeshInvertedPyramidStairsTerrainCfg(
+                "pyramid_stairs_inv": MeshInvertedPyramidStairsTerrainCfg(
                     proportion=0.25,
                     step_height_range=(0.05, 0.15),
                     step_width=0.3,
@@ -275,7 +285,8 @@ class RewardsCfg:
         func=mdp.feet_air_time,
         weight=0.125,
         params={
-            "sensor_cfg": SceneEntityCfg("contact_forces", body_names=".*toe.*"),
+            # Use toe_roll as the foot contact point for Digit V4
+            "sensor_cfg": SceneEntityCfg("contact_forces", body_names=".*_leg_toe_roll"),
             "command_name": "base_velocity",
             "threshold": 0.5,
         },
@@ -302,7 +313,8 @@ class RewardsCfg:
         params={
             "sensor_cfg": SceneEntityCfg(
                 "contact_forces",
-                body_names=[".*shin.*", ".*thigh.*", ".*torso.*", ".*pelvis.*"],
+                # Updated for Digit V4 body names: penalize contact on rods and tarsus
+                body_names=[".*_rod", ".*tarsus"],
             ),
             "threshold": 1.0,
         },
@@ -328,13 +340,14 @@ class TerminationsCfg:
         time_out=True,
     )
 
-    # Fall detection - contact on torso/pelvis
+    # Fall detection - contact on torso
     base_contact = TerminationTermCfg(
         func=mdp.illegal_contact,
         params={
             "sensor_cfg": SceneEntityCfg(
                 "contact_forces",
-                body_names=[".*torso.*", ".*pelvis.*"],
+                # Updated for Digit V4: only torso_base for fall detection
+                body_names=["torso_base"],
             ),
             "threshold": 1.0,
         },
@@ -476,10 +489,13 @@ class DigitFlatEnvCfg(ManagerBasedRLEnvCfg):
     """Complete environment configuration for Digit on flat terrain.
 
     Recommended for initial training to establish basic walking.
+
+    GPU Optimization: Default num_envs=8192 for better GPU utilization.
+    On RTX 4090 (24GB), you can use up to 16384 envs.
     """
 
-    # Scene
-    scene: DigitSceneCfg = DigitSceneCfg(num_envs=4096, env_spacing=2.5)
+    # Scene - 8192 envs for better GPU utilization (was 4096)
+    scene: DigitSceneCfg = DigitSceneCfg(num_envs=8192, env_spacing=2.5)
 
     # MDP components
     observations: ObservationsCfg = ObservationsCfg()
@@ -526,8 +542,8 @@ class DigitRoughEnvCfg(DigitFlatEnvCfg):
     - Terrain curriculum
     """
 
-    # Override scene with rough terrain
-    scene: DigitRoughSceneCfg = DigitRoughSceneCfg(num_envs=4096, env_spacing=2.5)
+    # Override scene with rough terrain - 8192 envs for better GPU utilization
+    scene: DigitRoughSceneCfg = DigitRoughSceneCfg(num_envs=8192, env_spacing=2.5)
 
     # Extended domain randomization
     events: EventsRoughCfg = EventsRoughCfg()

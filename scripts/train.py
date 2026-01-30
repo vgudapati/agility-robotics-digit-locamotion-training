@@ -12,22 +12,28 @@ Usage (Linux/macOS):
     ./isaaclab.sh -p scripts/train.py --task Digit-Velocity-Rough-v0
 
     # Train with custom settings
-    ./isaaclab.sh -p scripts/train.py --task Digit-Velocity-Flat-v0 \
+    ./isaaclab.sh -p scripts/train.py --task Digit-Velocity-Flat-v0 \\
         --num_envs 4096 --max_iterations 20000 --headless
 
-Usage (Windows):
-    # Train on flat terrain
-    isaaclab.bat -p scripts\\train.py --task Digit-Velocity-Flat-v0
+Usage (Windows PowerShell):
+    # IMPORTANT: In PowerShell, use .\\ prefix and deactivate conda first
+    cd C:\\IsaacLab
+    $env:CONDA_PREFIX = ""
 
-    # Train on rough terrain
-    isaaclab.bat -p scripts\\train.py --task Digit-Velocity-Rough-v0
+    # Train on flat terrain
+    .\\isaaclab.bat -p c:\\path\\to\\scripts\\train.py --task Digit-Velocity-Flat-v0
 
     # Train with custom settings
-    isaaclab.bat -p scripts\\train.py --task Digit-Velocity-Flat-v0 ^
+    .\\isaaclab.bat -p c:\\path\\to\\scripts\\train.py --task Digit-Velocity-Flat-v0 `
         --num_envs 4096 --max_iterations 20000 --headless
 
+Usage (Windows Command Prompt):
+    cd C:\\IsaacLab
+    set CONDA_PREFIX=
+    isaaclab.bat -p c:\\path\\to\\scripts\\train.py --task Digit-Velocity-Flat-v0
+
     # Resume training from checkpoint
-    isaaclab.bat -p scripts\\train.py --task Digit-Velocity-Flat-v0 ^
+    isaaclab.bat -p c:\\path\\to\\scripts\\train.py --task Digit-Velocity-Flat-v0 ^
         --resume --load_run <run_name>
 """
 
@@ -131,6 +137,7 @@ import gymnasium as gym
 import torch
 
 from isaaclab_rl.rsl_rl import RslRlOnPolicyRunnerCfg, RslRlVecEnvWrapper
+from isaaclab_tasks.utils.parse_cfg import parse_env_cfg, load_cfg_from_registry
 
 # Import to register environments
 import digit_locomotion  # noqa: F401
@@ -141,21 +148,21 @@ def main():
     # Set random seed
     torch.manual_seed(args.seed)
 
-    # Create the environment
-    env_cfg_kwargs = {}
-    if args.num_envs is not None:
-        env_cfg_kwargs["num_envs"] = args.num_envs
-
-    env = gym.make(
+    # Parse environment configuration from registry
+    env_cfg = parse_env_cfg(
         args.task,
-        cfg=env_cfg_kwargs if env_cfg_kwargs else None,
+        device=args.device,
+        num_envs=args.num_envs,
     )
+
+    # Create the environment with parsed config
+    env = gym.make(args.task, cfg=env_cfg)
 
     # Wrap environment for RSL-RL
     env = RslRlVecEnvWrapper(env)
 
-    # Get agent configuration
-    agent_cfg: RslRlOnPolicyRunnerCfg = env.unwrapped.cfg.agent_cfg
+    # Load agent configuration from registry
+    agent_cfg: RslRlOnPolicyRunnerCfg = load_cfg_from_registry(args.task, "rsl_rl_cfg_entry_point")
 
     # Override configuration with command line arguments
     if args.max_iterations is not None:
@@ -178,9 +185,10 @@ def main():
     from rsl_rl.runners import OnPolicyRunner
 
     # Create the runner
+    # Note: OnPolicyRunner expects a dict, not a dataclass
     runner = OnPolicyRunner(
         env=env,
-        train_cfg=agent_cfg,
+        train_cfg=agent_cfg.to_dict(),
         log_dir=log_dir,
         device=env.device,
     )

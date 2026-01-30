@@ -117,18 +117,26 @@ Start with flat terrain training to establish basic walking.
 
 #### Windows (PowerShell)
 
-```powershell
-# Using the convenience script
-.\scripts\train.ps1 -Task Digit-Velocity-Flat-v0 -NumEnvs 4096 -Headless
+> **Important:** In PowerShell, you must use `.\` prefix to run scripts from the current directory.
+> Also, deactivate conda first to use Isaac Sim's Python.
 
-# Or using isaaclab.bat directly
-isaaclab.bat -p scripts\train.py --task Digit-Velocity-Flat-v0 --num_envs 4096 --headless
+```powershell
+# Navigate to IsaacLab directory
+cd C:\IsaacLab
+
+# Deactivate conda (required to use Isaac Sim's Python)
+$env:CONDA_PREFIX = ""
+
+# Run training (note the .\ prefix for PowerShell)
+.\isaaclab.bat -p c:\path\to\this\repo\scripts\train.py --task Digit-Velocity-Flat-v0 --num_envs 4096 --headless
 ```
 
 #### Windows (Command Prompt)
 
 ```cmd
-scripts\train.bat --task Digit-Velocity-Flat-v0 --num_envs 4096 --headless
+cd C:\IsaacLab
+set CONDA_PREFIX=
+isaaclab.bat -p c:\path\to\this\repo\scripts\train.py --task Digit-Velocity-Flat-v0 --num_envs 4096 --headless
 ```
 
 ### Train on Rough Terrain
@@ -144,10 +152,20 @@ Once flat terrain training converges, train on rough terrain for robustness.
     --headless
 ```
 
-#### Windows
+#### Windows (PowerShell)
 
 ```powershell
-.\scripts\train.ps1 -Task Digit-Velocity-Rough-v0 -NumEnvs 4096 -Headless
+cd C:\IsaacLab
+$env:CONDA_PREFIX = ""
+.\isaaclab.bat -p c:\path\to\this\repo\scripts\train.py --task Digit-Velocity-Rough-v0 --num_envs 4096 --headless
+```
+
+#### Windows (Command Prompt)
+
+```cmd
+cd C:\IsaacLab
+set CONDA_PREFIX=
+isaaclab.bat -p c:\path\to\this\repo\scripts\train.py --task Digit-Velocity-Rough-v0 --num_envs 4096 --headless
 ```
 
 ### Evaluate a Trained Policy
@@ -161,11 +179,29 @@ Once flat terrain training converges, train on rough terrain for robustness.
     --num_envs 16
 ```
 
-#### Windows
+#### Windows (PowerShell)
 
 ```powershell
-isaaclab.bat -p scripts\play.py --task Digit-Velocity-Flat-v0 ^
-    --checkpoint logs\digit_flat\model_15000.pt --num_envs 16
+cd C:\IsaacLab
+$env:CONDA_PREFIX = ""
+
+# With visualization (4 robots for better viewing)
+.\isaaclab.bat -p c:\path\to\this\repo\scripts\play.py `
+    --task Digit-Velocity-Flat-v0 `
+    --checkpoint C:\IsaacLab\logs\digit_flat\final_model.pt `
+    --num_envs 4
+
+# Headless evaluation (faster, more robots)
+.\isaaclab.bat -p c:\path\to\this\repo\scripts\play.py `
+    --headless --num_envs 64
+```
+
+#### Windows (Command Prompt)
+
+```cmd
+cd C:\IsaacLab
+set CONDA_PREFIX=
+isaaclab.bat -p c:\path\to\this\repo\scripts\play.py --task Digit-Velocity-Flat-v0 --checkpoint C:\IsaacLab\logs\digit_flat\final_model.pt --num_envs 4
 ```
 
 ### Export Policy for Deployment

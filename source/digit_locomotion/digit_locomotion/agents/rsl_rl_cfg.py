@@ -22,10 +22,17 @@ class DigitFlatPPORunnerCfg(RslRlOnPolicyRunnerCfg):
 
     This configuration is optimized for learning basic walking behavior.
     Training typically converges within 10-15k iterations.
+
+    GPU Optimization Notes (RTX 4090 with 24GB VRAM):
+    - Use --num_envs 8192 or 16384 for better GPU utilization
+    - num_steps_per_env=48 collects more data per update
+    - Larger network [1024, 512, 256] improves learning capacity
+    - num_mini_batches=8 for larger effective batch size
     """
 
     # Runner settings
-    num_steps_per_env = 24  # Steps collected per environment before update
+    # NOTE: Increase num_steps_per_env for better GPU utilization
+    num_steps_per_env = 48  # Steps collected per environment before update (was 24)
     max_iterations = 15000  # Total training iterations
     save_interval = 500     # Save checkpoint every N iterations
     experiment_name = "digit_flat"
@@ -39,10 +46,11 @@ class DigitFlatPPORunnerCfg(RslRlOnPolicyRunnerCfg):
     empirical_normalization = False
 
     # Policy network configuration
+    # NOTE: Larger network for better learning capacity and GPU utilization
     policy: RslRlPpoActorCriticCfg = RslRlPpoActorCriticCfg(
         init_noise_std=1.0,
-        actor_hidden_dims=[512, 256, 128],
-        critic_hidden_dims=[512, 256, 128],
+        actor_hidden_dims=[1024, 512, 256],   # Larger (was [512, 256, 128])
+        critic_hidden_dims=[1024, 512, 256],  # Larger (was [512, 256, 128])
         activation="elu",
     )
 
@@ -60,7 +68,7 @@ class DigitFlatPPORunnerCfg(RslRlOnPolicyRunnerCfg):
 
         # Optimization
         num_learning_epochs=5,
-        num_mini_batches=4,
+        num_mini_batches=8,   # More mini-batches (was 4)
         learning_rate=1.0e-3,
         schedule="adaptive",  # Adaptive LR based on KL divergence
         desired_kl=0.01,
