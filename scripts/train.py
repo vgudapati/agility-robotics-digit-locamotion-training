@@ -8,33 +8,34 @@ Usage (Linux/macOS):
     # Train on flat terrain (recommended for initial training)
     ./isaaclab.sh -p scripts/train.py --task Digit-Velocity-Flat-v0
 
-    # Train on rough terrain
-    ./isaaclab.sh -p scripts/train.py --task Digit-Velocity-Rough-v0
-
     # Train with custom settings
     ./isaaclab.sh -p scripts/train.py --task Digit-Velocity-Flat-v0 \\
         --num_envs 4096 --max_iterations 20000 --headless
+
+    # Resume from checkpoint
+    ./isaaclab.sh -p scripts/train.py --task Digit-Velocity-Flat-v0 \\
+        --resume --checkpoint logs/digit_flat/run_001/model_5000.pt
 
 Usage (Windows PowerShell):
     # IMPORTANT: In PowerShell, use .\\ prefix and deactivate conda first
     cd C:\\IsaacLab
     $env:CONDA_PREFIX = ""
 
-    # Train on flat terrain
-    .\\isaaclab.bat -p c:\\path\\to\\scripts\\train.py --task Digit-Velocity-Flat-v0
+    # New training run (creates logs/digit_flat/run_001/)
+    .\\isaaclab.bat -p scripts\\train.py --task Digit-Velocity-Flat-v0 --headless
 
-    # Train with custom settings
-    .\\isaaclab.bat -p c:\\path\\to\\scripts\\train.py --task Digit-Velocity-Flat-v0 `
-        --num_envs 4096 --max_iterations 20000 --headless
+    # Resume from checkpoint (continues in same run directory)
+    .\\isaaclab.bat -p scripts\\train.py --task Digit-Velocity-Flat-v0 --headless `
+        --resume --checkpoint C:\\IsaacLab\\logs\\digit_flat\\run_001\\model_5000.pt
+
+    # Resume from latest checkpoint in a run
+    .\\isaaclab.bat -p scripts\\train.py --task Digit-Velocity-Flat-v0 --headless `
+        --resume --run_dir C:\\IsaacLab\\logs\\digit_flat\\run_001
 
 Usage (Windows Command Prompt):
     cd C:\\IsaacLab
     set CONDA_PREFIX=
-    isaaclab.bat -p c:\\path\\to\\scripts\\train.py --task Digit-Velocity-Flat-v0
-
-    # Resume training from checkpoint
-    isaaclab.bat -p c:\\path\\to\\scripts\\train.py --task Digit-Velocity-Flat-v0 ^
-        --resume --load_run <run_name>
+    isaaclab.bat -p scripts\\train.py --task Digit-Velocity-Flat-v0 --headless
 """
 
 from __future__ import annotations
@@ -91,16 +92,22 @@ def parse_args():
         help="Resume training from checkpoint",
     )
     parser.add_argument(
-        "--load_run",
-        type=str,
-        default=None,
-        help="Name of the run to load when resuming",
-    )
-    parser.add_argument(
         "--checkpoint",
         type=str,
         default=None,
-        help="Path to checkpoint file to load",
+        help="Path to specific checkpoint file to resume from",
+    )
+    parser.add_argument(
+        "--run_dir",
+        type=str,
+        default=None,
+        help="Path to run directory to resume from (uses latest checkpoint)",
+    )
+    parser.add_argument(
+        "--run_name",
+        type=str,
+        default=None,
+        help="Custom name for this run (default: auto-generated run_XXX)",
     )
 
     # Logging settings
@@ -135,12 +142,81 @@ simulation_app = app_launcher.app
 
 import gymnasium as gym
 import torch
+from datetime import datetime
 
 from isaaclab_rl.rsl_rl import RslRlOnPolicyRunnerCfg, RslRlVecEnvWrapper
 from isaaclab_tasks.utils.parse_cfg import parse_env_cfg, load_cfg_from_registry
 
 # Import to register environments
 import digit_locomotion  # noqa: F401
+
+
+class TeeLogger:
+    """Duplicates stdout to both console and a log file."""
+
+    def __init__(self, log_file: str):
+        self.terminal = sys.stdout
+        self.log_file = open(log_file, "a", encoding="utf-8")
+
+    def write(self, message):
+        self.terminal.write(message)
+        self.log_file.write(message)
+        self.log_file.flush()  # Ensure immediate write
+
+    def flush(self):
+        self.terminal.flush()
+        self.log_file.flush()
+
+    def close(self):
+        self.log_file.close()
+
+
+def get_next_run_dir(base_dir: str, experiment_name: str) -> str:
+    """Get the next available run directory (run_001, run_002, etc.)."""
+    experiment_dir = os.path.join(base_dir, experiment_name)
+    os.makedirs(experiment_dir, exist_ok=True)
+
+    # Find existing run directories
+    existing_runs = []
+    if os.path.exists(experiment_dir):
+        for name in os.listdir(experiment_dir):
+            if name.startswith("run_") and os.path.isdir(os.path.join(experiment_dir, name)):
+                try:
+                    run_num = int(name.split("_")[1])
+                    existing_runs.append(run_num)
+                except (IndexError, ValueError):
+                    pass
+
+    # Get next run number
+    next_run = max(existing_runs, default=0) + 1
+    return os.path.join(experiment_dir, f"run_{next_run:03d}")
+
+
+def find_latest_checkpoint(run_dir: str) -> str | None:
+    """Find the latest checkpoint in a run directory."""
+    if not os.path.exists(run_dir):
+        return None
+
+    checkpoints = []
+    for name in os.listdir(run_dir):
+        if name.startswith("model_") and name.endswith(".pt"):
+            try:
+                # Extract iteration number from model_XXXX.pt
+                iter_num = int(name.replace("model_", "").replace(".pt", ""))
+                checkpoints.append((iter_num, os.path.join(run_dir, name)))
+            except ValueError:
+                pass
+
+    if not checkpoints:
+        # Check for final_model.pt
+        final_model = os.path.join(run_dir, "final_model.pt")
+        if os.path.exists(final_model):
+            return final_model
+        return None
+
+    # Return checkpoint with highest iteration number
+    checkpoints.sort(key=lambda x: x[0], reverse=True)
+    return checkpoints[0][1]
 
 
 def main():
@@ -170,16 +246,42 @@ def main():
     if args.experiment_name is not None:
         agent_cfg.experiment_name = args.experiment_name
 
-    # Set resume parameters
-    agent_cfg.resume = args.resume
-    if args.load_run is not None:
-        agent_cfg.load_run = args.load_run
-    if args.checkpoint is not None:
-        agent_cfg.load_checkpoint = args.checkpoint
+    # Determine checkpoint to load (if resuming)
+    checkpoint_path = None
+    if args.resume:
+        if args.checkpoint:
+            checkpoint_path = args.checkpoint
+        elif args.run_dir:
+            checkpoint_path = find_latest_checkpoint(args.run_dir)
+            if checkpoint_path is None:
+                raise FileNotFoundError(f"No checkpoint found in {args.run_dir}")
+        else:
+            raise ValueError("--resume requires either --checkpoint or --run_dir")
 
-    # Create the log directory
-    log_dir = os.path.join(args.log_dir, agent_cfg.experiment_name)
+        print(f"Resuming from checkpoint: {checkpoint_path}")
+
+    # Determine log directory
+    if args.resume and args.run_dir:
+        # Continue in the same run directory
+        log_dir = args.run_dir
+    elif args.resume and args.checkpoint:
+        # Continue in the same directory as the checkpoint
+        log_dir = os.path.dirname(args.checkpoint)
+    elif args.run_name:
+        # Use custom run name
+        log_dir = os.path.join(args.log_dir, agent_cfg.experiment_name, args.run_name)
+    else:
+        # Create new run directory with incrementing number
+        log_dir = get_next_run_dir(args.log_dir, agent_cfg.experiment_name)
+
     os.makedirs(log_dir, exist_ok=True)
+
+    # Setup logging to file (tee stdout to both console and log file)
+    timestamp = datetime.now().strftime("%Y%m%d_%H%M%S")
+    log_file = os.path.join(log_dir, f"training_{timestamp}.log")
+    tee_logger = TeeLogger(log_file)
+    sys.stdout = tee_logger
+    print(f"Logging training output to: {log_file}")
 
     # Import RSL-RL runner
     from rsl_rl.runners import OnPolicyRunner
@@ -193,6 +295,11 @@ def main():
         device=env.device,
     )
 
+    # Load checkpoint if resuming
+    if checkpoint_path:
+        print(f"Loading checkpoint: {checkpoint_path}")
+        runner.load(checkpoint_path)
+
     # Print training info
     print("\n" + "=" * 60)
     print("DIGIT LOCOMOTION TRAINING")
@@ -202,6 +309,8 @@ def main():
     print(f"Max iterations: {agent_cfg.max_iterations}")
     print(f"Log directory: {log_dir}")
     print(f"Device: {env.device}")
+    if checkpoint_path:
+        print(f"Resumed from: {checkpoint_path}")
     print("=" * 60 + "\n")
 
     # Run training
@@ -215,6 +324,9 @@ def main():
     runner.save(os.path.join(log_dir, "final_model.pt"))
 
     # Cleanup
+    print(f"\nLog file saved to: {log_file}")
+    sys.stdout = tee_logger.terminal  # Restore original stdout
+    tee_logger.close()
     env.close()
     simulation_app.close()
 

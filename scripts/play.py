@@ -12,17 +12,23 @@ Usage (Windows PowerShell):
     # Play with visualization (4 robots)
     .\\isaaclab.bat -p c:\\path\\to\\scripts\\play.py --num_envs 4
 
+    # Play with FAST forward walking (1.5 m/s)
+    .\\isaaclab.bat -p c:\\path\\to\\scripts\\play.py --num_envs 4 --vel_x 1.5
+
+    # Play with custom velocity (forward + turning)
+    .\\isaaclab.bat -p c:\\path\\to\\scripts\\play.py --vel_x 1.0 --vel_yaw 0.5
+
     # Headless evaluation (faster)
     .\\isaaclab.bat -p c:\\path\\to\\scripts\\play.py --headless --num_envs 64
 
 Usage (Windows Command Prompt):
     cd C:\\IsaacLab
     set CONDA_PREFIX=
-    isaaclab.bat -p c:\\path\\to\\scripts\\play.py --num_envs 4
+    isaaclab.bat -p c:\\path\\to\\scripts\\play.py --num_envs 4 --vel_x 1.5
 
 Usage (Linux):
     cd /path/to/IsaacLab
-    ./isaaclab.sh -p /path/to/scripts/play.py --num_envs 4
+    ./isaaclab.sh -p /path/to/scripts/play.py --num_envs 4 --vel_x 1.5
 """
 
 from __future__ import annotations
@@ -71,6 +77,26 @@ def parse_args():
         type=str,
         default="C:/IsaacLab/logs/digit_flat/final_model.pt",
         help="Path to the trained policy checkpoint",
+    )
+
+    # Velocity command overrides (for testing without modifying training config)
+    parser.add_argument(
+        "--vel_x",
+        type=float,
+        default=None,
+        help="Fixed forward velocity (m/s). Use 1.0-1.5 for fast walking.",
+    )
+    parser.add_argument(
+        "--vel_y",
+        type=float,
+        default=None,
+        help="Fixed lateral velocity (m/s). Positive = left.",
+    )
+    parser.add_argument(
+        "--vel_yaw",
+        type=float,
+        default=None,
+        help="Fixed yaw rate (rad/s). Positive = turn left.",
     )
 
     # Add Isaac Sim launcher arguments
@@ -143,6 +169,12 @@ def main():
     # Get the inference policy
     policy = runner.get_inference_policy(device=env.device)
 
+    # Check if user specified fixed velocities
+    use_fixed_vel = args.vel_x is not None or args.vel_y is not None or args.vel_yaw is not None
+    fixed_vel_x = args.vel_x if args.vel_x is not None else 0.0
+    fixed_vel_y = args.vel_y if args.vel_y is not None else 0.0
+    fixed_vel_yaw = args.vel_yaw if args.vel_yaw is not None else 0.0
+
     # Print info
     print("\n" + "=" * 60)
     print("DIGIT LOCOMOTION EVALUATION")
@@ -151,6 +183,10 @@ def main():
     print(f"Number of environments: {env.num_envs}")
     print(f"Checkpoint: {args.checkpoint}")
     print(f"Device: {env.device}")
+    if use_fixed_vel:
+        print(f"Fixed velocity: x={fixed_vel_x:.2f} m/s, y={fixed_vel_y:.2f} m/s, yaw={fixed_vel_yaw:.2f} rad/s")
+    else:
+        print("Velocity: Random commands from environment")
     print("=" * 60)
     print("\nRunning policy... Press Ctrl+C to stop\n")
 
@@ -164,6 +200,16 @@ def main():
 
     try:
         while simulation_app.is_running():
+            # Override velocity commands if specified
+            if use_fixed_vel:
+                # Access the underlying Isaac Lab environment
+                base_env = env.unwrapped
+                cmd_manager = base_env.command_manager
+                # Set fixed velocity commands for all environments
+                cmd_manager.get_command("base_velocity")[:, 0] = fixed_vel_x  # x velocity
+                cmd_manager.get_command("base_velocity")[:, 1] = fixed_vel_y  # y velocity
+                cmd_manager.get_command("base_velocity")[:, 2] = fixed_vel_yaw  # yaw rate
+
             # Get action from policy
             with torch.no_grad():
                 actions = policy(obs)
