@@ -103,11 +103,95 @@ With default settings, GPU utilization was only 30-40% and VRAM usage was 4-5 GB
 
 | GPU | VRAM | Recommended num_envs |
 |-----|------|---------------------|
+| Titan RTX | 24 GB | 8192 (Turing arch, compute 7.5) |
 | RTX 3080 | 10 GB | 4096 |
 | RTX 3090 | 24 GB | 8192-12288 |
 | RTX 4080 | 16 GB | 6144-8192 |
 | RTX 4090 | 24 GB | 8192-16384 |
 | A100 | 40/80 GB | 16384-32768 |
+
+---
+
+## Training Configurations
+
+### Minimal Environment (8 DOF - Legs Only)
+
+For fast experimentation, use the minimal configuration that controls only the main leg joints:
+
+**Environment:** `Digit-Velocity-Minimal-v0`
+**DOF:** 8 joints (hip_roll, hip_yaw, hip_pitch, knee × 2 legs)
+
+### Fast Iteration Mode (Default for Minimal)
+
+Optimized for rapid experimentation and quick feedback loops:
+
+| Parameter | Value | Rationale |
+|-----------|-------|-----------|
+| num_envs | 16384 | Maximum GPU parallelism |
+| num_steps_per_env | 16 | Fast iterations, more policy updates |
+| Network | [256, 128, 64] | Small = fast forward/backward pass |
+| Learning rate | 3e-3 | Higher LR for faster learning |
+| num_learning_epochs | 4 | Fewer epochs per update |
+| num_mini_batches | 4 | Smaller batches |
+
+**Command:**
+```powershell
+cd C:\IsaacLab
+$env:CONDA_PREFIX = ""
+.\isaaclab.bat -p c:\Users\vguda\projects\custom\agility-robotics-digit-locamotion-training\scripts\train.py --task Digit-Velocity-Minimal-v0 --num_envs 16384 --headless
+```
+
+**Expected Performance:**
+- ~2000 iterations in ~30-40 minutes on RTX 4090
+- Quick policy exploration, suitable for testing reward designs
+
+### High-Quality / Overnight Mode
+
+For thorough training with better convergence:
+
+| Parameter | Value | Rationale |
+|-----------|-------|-----------|
+| num_envs | 8192-16384 | Balance memory and parallelism |
+| num_steps_per_env | 48 | More data per update, better gradients |
+| Network | [1024, 512, 256] | Larger model capacity |
+| Learning rate | 1e-3 | Conservative for stability |
+| num_learning_epochs | 5 | More thorough optimization |
+| num_mini_batches | 8 | Larger effective batch size |
+
+**To switch to high-quality mode**, modify `rsl_rl_cfg.py`:
+
+```python
+@configclass
+class DigitMinimalPPORunnerCfg(RslRlOnPolicyRunnerCfg):
+    num_steps_per_env = 48  # Was 16
+    max_iterations = 15000  # Longer training
+
+    policy: RslRlPpoActorCriticCfg = RslRlPpoActorCriticCfg(
+        actor_hidden_dims=[512, 256, 128],   # Medium network
+        critic_hidden_dims=[512, 256, 128],
+        # ...
+    )
+
+    algorithm: RslRlPpoAlgorithmCfg = RslRlPpoAlgorithmCfg(
+        num_learning_epochs=5,
+        num_mini_batches=8,
+        learning_rate=1.0e-3,
+        # ...
+    )
+```
+
+**Expected Performance:**
+- 15000 iterations in ~6-8 hours on RTX 4090
+- Better policy convergence, suitable for final models
+
+### Trade-off Summary
+
+| Setting | Fast Iteration | High-Quality |
+|---------|----------------|--------------|
+| Iteration speed | ~150-200 iter/min | ~30-50 iter/min |
+| Data per update | Less (but more updates) | More (but fewer updates) |
+| Network capacity | Small | Large |
+| Use case | Reward tuning, debugging | Final training |
 
 ---
 

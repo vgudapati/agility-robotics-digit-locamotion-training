@@ -3,9 +3,10 @@
 RSL-RL is a high-performance RL library optimized for robot locomotion,
 developed by the Robotic Systems Lab at ETH Zurich.
 
-Two configurations are provided:
+Configurations provided:
 1. DigitFlatPPORunnerCfg - For training on flat terrain
 2. DigitRoughPPORunnerCfg - For training on rough terrain with more iterations
+3. DigitMinimalPPORunnerCfg - Fast experiments with reduced DOF (8 joints)
 """
 
 from isaaclab.utils import configclass
@@ -130,6 +131,59 @@ class DigitCurriculumPPORunnerCfg(DigitRoughPPORunnerCfg):
         learning_rate=3.0e-4,
         schedule="adaptive",
         desired_kl=0.008,
+        max_grad_norm=1.0,
+        gamma=0.99,
+        lam=0.95,
+    )
+
+
+@configclass
+class DigitMinimalPPORunnerCfg(RslRlOnPolicyRunnerCfg):
+    """PPO configuration for minimal Digit (legs only, 8 DOF).
+
+    Optimized for FAST iteration speed:
+    - 16384 envs (balanced GPU utilization vs iteration speed)
+    - 16 steps per env (fast iterations, more policy updates)
+    - Small network (fast forward/backward)
+
+    Speed optimization:
+    - Low num_steps_per_env = faster iterations
+    - High num_envs = GPU utilization
+    - Small network = fast inference
+    """
+
+    # Runner settings - optimized for FAST iterations
+    num_steps_per_env = 16  # Low = fast iterations (was 48)
+    max_iterations = 5000   # Quick experiments (override with --max_iterations)
+    save_interval = 50      # Save checkpoints frequently for analysis
+    experiment_name = "digit_minimal"
+    run_name = ""
+    logger = "tensorboard"
+    neptune_project = ""
+    wandb_project = ""
+    resume = False
+
+    empirical_normalization = False
+
+    # Small network for fast inference
+    policy: RslRlPpoActorCriticCfg = RslRlPpoActorCriticCfg(
+        init_noise_std=1.0,
+        actor_hidden_dims=[256, 128, 64],   # Small network
+        critic_hidden_dims=[256, 128, 64],  # Small network
+        activation="elu",
+    )
+
+    # PPO algorithm - fast updates
+    algorithm: RslRlPpoAlgorithmCfg = RslRlPpoAlgorithmCfg(
+        value_loss_coef=1.0,
+        use_clipped_value_loss=True,
+        clip_param=0.2,
+        entropy_coef=0.01,
+        num_learning_epochs=4,    # Fewer epochs per update (was 5)
+        num_mini_batches=4,       # Fewer mini-batches (was 8)
+        learning_rate=3.0e-3,     # Higher LR for faster learning
+        schedule="adaptive",
+        desired_kl=0.01,
         max_grad_norm=1.0,
         gamma=0.99,
         lam=0.95,

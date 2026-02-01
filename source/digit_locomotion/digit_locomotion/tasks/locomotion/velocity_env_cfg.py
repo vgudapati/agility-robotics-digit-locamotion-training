@@ -182,6 +182,33 @@ class ActionsCfg:
     )
 
 
+@configclass
+class ActionsMinimalCfg:
+    """Minimal action space - legs only (8 DOF).
+
+    Controls only the primary leg joints for faster training:
+    - hip_roll, hip_yaw, hip_pitch, knee (4 per leg = 8 total)
+
+    Arms and passive leg joints (shin, tarsus, toe) are fixed.
+    This significantly reduces:
+    - Action space dimensionality (50 -> 8)
+    - Observation space (fewer joint states)
+    - Training time and complexity
+    """
+
+    joint_pos = mdp.JointPositionActionCfg(
+        asset_name="robot",
+        joint_names=[
+            ".*hip_roll",
+            ".*hip_yaw",
+            ".*hip_pitch",
+            ".*knee",
+        ],  # Only main leg joints (8 DOF total)
+        scale=0.25,
+        use_default_offset=True,
+    )
+
+
 # =============================================================================
 # OBSERVATIONS CONFIGURATION
 # =============================================================================
@@ -557,3 +584,40 @@ class DigitRoughEnvCfg(DigitFlatEnvCfg):
 
         # Longer episodes for terrain navigation
         self.episode_length_s = 30.0
+
+
+@configclass
+class DigitMinimalEnvCfg(DigitFlatEnvCfg):
+    """Minimal environment for fast training experiments.
+
+    Uses reduced action space (8 DOF legs only) for:
+    - Faster training iterations
+    - Quicker experimentation with rewards/hyperparameters
+    - Proof-of-concept before full training
+
+    DOF Comparison:
+    - Full: 50 joints (all body)
+    - Minimal: 8 joints (hip_roll, hip_yaw, hip_pitch, knee x2)
+
+    Training speedup comes from:
+    - Smaller action/observation spaces
+    - Simpler policy to learn
+    - Faster physics (fewer active joints)
+
+    GPU Optimization:
+    - 16384 envs (2x more than full config - less memory per env)
+    - Combined with higher num_steps_per_env in PPO config
+    """
+
+    # Balanced environment count for fast iterations
+    scene: DigitSceneCfg = DigitSceneCfg(num_envs=16384, env_spacing=2.5)
+
+    # Use minimal actions (legs only)
+    actions: ActionsMinimalCfg = ActionsMinimalCfg()
+
+    def __post_init__(self):
+        """Post-initialization configuration."""
+        super().__post_init__()
+
+        # Shorter episodes for faster iteration during experiments
+        self.episode_length_s = 10.0
