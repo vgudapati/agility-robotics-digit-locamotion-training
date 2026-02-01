@@ -41,6 +41,9 @@ from isaaclab.utils.noise import AdditiveUniformNoiseCfg, AdditiveGaussianNoiseC
 # Import MDP components (using locomotion-specific mdp with extra reward functions)
 import isaaclab_tasks.manager_based.locomotion.velocity.mdp as mdp
 
+# Import custom MDP components (arm swing coordination, etc.)
+from . import mdp as custom_mdp
+
 # Import Digit robot configuration from isaaclab_assets
 from isaaclab_assets.robots.agility import DIGIT_V4_CFG as DIGIT_CFG
 
@@ -415,14 +418,14 @@ class RewardsRunningCfg:
 
     # === Arm Swing Coordination (Natural Movement) ===
     arm_swing = RewardTermCfg(
-        func=mdp.arm_swing_coordination,
+        func=custom_mdp.arm_swing_coordination,
         weight=0.3,  # Moderate weight to encourage but not dominate
         params={"command_name": "base_velocity"},
     )
 
     # === Default Pose Penalty (Prevent Extreme Arm Positions) ===
     joint_default = RewardTermCfg(
-        func=mdp.joint_default_position,
+        func=custom_mdp.joint_default_position,
         weight=-0.05,  # Small penalty to gently guide toward natural poses
         params={"asset_cfg": SceneEntityCfg("robot")},
     )
