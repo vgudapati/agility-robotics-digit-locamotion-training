@@ -7,6 +7,7 @@ from .velocity_env_cfg import (
     DigitFlatEnvCfg,
     DigitRoughEnvCfg,
     DigitMinimalEnvCfg,
+    DigitRunningEnvCfg,
 )
 
 # Register Gymnasium environments
@@ -40,9 +41,20 @@ gym.register(
     },
 )
 
+gym.register(
+    id="Digit-Velocity-Running-v0",
+    entry_point="isaaclab.envs:ManagerBasedRLEnv",
+    disable_env_checker=True,
+    kwargs={
+        "env_cfg_entry_point": f"{__name__}.velocity_env_cfg:DigitRunningEnvCfg",
+        "rsl_rl_cfg_entry_point": f"{__name__.rsplit('.', 2)[0]}.agents.rsl_rl_cfg:DigitRunningPPORunnerCfg",
+    },
+)
+
 __all__ = [
     "mdp",
     "DigitFlatEnvCfg",
     "DigitRoughEnvCfg",
     "DigitMinimalEnvCfg",
+    "DigitRunningEnvCfg",
 ]

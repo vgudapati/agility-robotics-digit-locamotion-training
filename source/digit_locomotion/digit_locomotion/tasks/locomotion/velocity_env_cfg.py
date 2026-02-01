@@ -162,6 +162,40 @@ class CommandsCfg:
     )
 
 
+@configclass
+class CommandsRunningCfg:
+    """Configuration for high-speed running velocity commands.
+
+    TARGET: 30 mph = 13.4 m/s (faster than Usain Bolt!)
+
+    CURRICULUM APPROACH - Manually update lin_vel_x after each phase:
+    Phase 1: (0.0, 2.0)   - Walking, learn balance (5000 iter)
+    Phase 2: (0.0, 5.0)   - Jogging/running (5000 iter)
+    Phase 3: (0.0, 8.0)   - Fast running (5000 iter)
+    Phase 4: (0.0, 10.0)  - Sprint warmup (5000 iter)
+    Phase 5: (0.0, 13.5)  - Full sprint 30 mph (10000+ iter)
+
+    After each phase, update lin_vel_x and resume from checkpoint.
+    """
+
+    base_velocity = mdp.UniformVelocityCommandCfg(
+        asset_name="robot",
+        resampling_time_range=(8.0, 12.0),  # Vary command timing
+        rel_standing_envs=0.02,  # 2% standing to learn balance
+        rel_heading_envs=1.0,
+        heading_command=True,
+        heading_control_stiffness=0.5,
+        debug_vis=True,
+        ranges=mdp.UniformVelocityCommandCfg.Ranges(
+            # PHASE 1: Walking (0-2 m/s) - START HERE
+            lin_vel_x=(0.0, 2.0),
+            lin_vel_y=(-0.2, 0.2),        # m/s lateral (minimal for stability)
+            ang_vel_z=(-0.3, 0.3),        # rad/s yaw (minimal for stability)
+            heading=(-math.pi, math.pi),
+        ),
+    )
+
+
 # =============================================================================
 # ACTIONS CONFIGURATION
 # =============================================================================
@@ -353,6 +387,90 @@ class RewardsCfg:
     )
 
 
+@configclass
+class RewardsRunningCfg:
+    """Reward function configuration for running gait.
+
+    PHASE 1 (current): Learn stable walking with slightly higher speeds
+    - Use same rewards as walking to establish stable gait first
+    - Once walking is stable, transition to running-specific rewards
+
+    Key adjustments for running (after walking is learned):
+    - Lower flat_orientation penalty (allow forward lean)
+    - Higher feet_air_time reward (encourage flight phases)
+    - Lower vertical velocity penalty (running has more vertical motion)
+    """
+
+    # === Tracking Rewards (Primary Objectives) ===
+    track_lin_vel_xy_exp = RewardTermCfg(
+        func=mdp.track_lin_vel_xy_exp,
+        weight=1.5,  # Same as walking for stability
+        params={"command_name": "base_velocity", "std": math.sqrt(0.25)},
+    )
+    track_ang_vel_z_exp = RewardTermCfg(
+        func=mdp.track_ang_vel_z_exp,
+        weight=0.75,  # Same as walking
+        params={"command_name": "base_velocity", "std": math.sqrt(0.25)},
+    )
+
+    # === Stability Penalties - START WITH WALKING VALUES ===
+    lin_vel_z_l2 = RewardTermCfg(
+        func=mdp.lin_vel_z_l2,
+        weight=-2.0,  # Same as walking (penalize bouncing initially)
+    )
+    ang_vel_xy_l2 = RewardTermCfg(
+        func=mdp.ang_vel_xy_l2,
+        weight=-0.05,  # Same as walking
+    )
+    flat_orientation_l2 = RewardTermCfg(
+        func=mdp.flat_orientation_l2,
+        weight=-0.5,  # Slightly relaxed from walking (-1.0) but not too much
+    )
+
+    # === Gait Quality ===
+    feet_air_time = RewardTermCfg(
+        func=mdp.feet_air_time,
+        weight=0.125,  # Same as walking (don't over-reward air time yet)
+        params={
+            "sensor_cfg": SceneEntityCfg("contact_forces", body_names=".*_leg_toe_roll"),
+            "command_name": "base_velocity",
+            "threshold": 0.5,  # Same as walking
+        },
+    )
+
+    # === Regularization Penalties ===
+    action_rate_l2 = RewardTermCfg(
+        func=mdp.action_rate_l2,
+        weight=-0.01,  # Same as walking
+    )
+    joint_acc_l2 = RewardTermCfg(
+        func=mdp.joint_acc_l2,
+        weight=-2.5e-7,  # Same as walking
+    )
+    joint_torques_l2 = RewardTermCfg(
+        func=mdp.applied_torque_limits,
+        weight=-1e-5,  # Same as walking
+    )
+
+    # === Safety Penalties ===
+    undesired_contacts = RewardTermCfg(
+        func=mdp.undesired_contacts,
+        weight=-1.0,
+        params={
+            "sensor_cfg": SceneEntityCfg(
+                "contact_forces",
+                body_names=[".*_rod", ".*tarsus"],
+            ),
+            "threshold": 1.0,
+        },
+    )
+    joint_pos_limits = RewardTermCfg(
+        func=mdp.joint_pos_limits,
+        weight=-1.0,
+        params={"asset_cfg": SceneEntityCfg("robot")},
+    )
+
+
 # =============================================================================
 # TERMINATIONS CONFIGURATION
 # =============================================================================
@@ -384,6 +502,39 @@ class TerminationsCfg:
     bad_orientation = TerminationTermCfg(
         func=mdp.bad_orientation,
         params={"limit_angle": 0.5},  # ~30 degrees
+    )
+
+
+@configclass
+class TerminationsRunningCfg:
+    """Episode termination conditions for running.
+
+    PHASE 1: Same as walking to learn stable gait first.
+    PHASE 2 (later): Increase limit_angle to allow more forward lean.
+    """
+
+    # Time limit
+    time_out = TerminationTermCfg(
+        func=mdp.time_out,
+        time_out=True,
+    )
+
+    # Fall detection - contact on torso
+    base_contact = TerminationTermCfg(
+        func=mdp.illegal_contact,
+        params={
+            "sensor_cfg": SceneEntityCfg(
+                "contact_forces",
+                body_names=["torso_base"],
+            ),
+            "threshold": 1.0,
+        },
+    )
+
+    # Excessive tilt - same as walking initially
+    bad_orientation = TerminationTermCfg(
+        func=mdp.bad_orientation,
+        params={"limit_angle": 0.5},  # ~30 degrees (same as walking)
     )
 
 
@@ -621,3 +772,45 @@ class DigitMinimalEnvCfg(DigitFlatEnvCfg):
 
         # Shorter episodes for faster iteration during experiments
         self.episode_length_s = 10.0
+
+
+@configclass
+class DigitRunningEnvCfg(DigitFlatEnvCfg):
+    """Environment configuration for high-speed running (target: 30 mph / 13.4 m/s).
+
+    Uses curriculum training - manually update lin_vel_x after each phase:
+    Phase 1: (0.0, 2.0)   Walking
+    Phase 2: (0.0, 5.0)   Jogging
+    Phase 3: (0.0, 8.0)   Fast running
+    Phase 4: (0.0, 10.0)  Sprint warmup
+    Phase 5: (0.0, 13.5)  30 mph sprint
+
+    Configuration:
+    - 8192 envs for ~16GB GPU memory usage
+    - Large network [1024, 512, 256] for complex dynamics
+
+    Key differences from walking:
+    - Running requires flight phases (both feet off ground)
+    - Forward lean is necessary for high-speed stability
+    - Higher vertical motion is expected
+    - Faster action corrections needed
+    """
+
+    # 8192 envs for ~16GB GPU memory
+    scene: DigitSceneCfg = DigitSceneCfg(num_envs=8192, env_spacing=2.5)
+
+    # High-speed velocity commands
+    commands: CommandsRunningCfg = CommandsRunningCfg()
+
+    # Running-optimized rewards
+    rewards: RewardsRunningCfg = RewardsRunningCfg()
+
+    # Running-optimized terminations (higher tilt tolerance)
+    terminations: TerminationsRunningCfg = TerminationsRunningCfg()
+
+    def __post_init__(self):
+        """Post-initialization configuration."""
+        super().__post_init__()
+
+        # Shorter episodes for running experiments
+        self.episode_length_s = 15.0

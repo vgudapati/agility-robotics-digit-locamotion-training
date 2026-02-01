@@ -7,6 +7,7 @@ Configurations provided:
 1. DigitFlatPPORunnerCfg - For training on flat terrain
 2. DigitRoughPPORunnerCfg - For training on rough terrain with more iterations
 3. DigitMinimalPPORunnerCfg - Fast experiments with reduced DOF (8 joints)
+4. DigitRunningPPORunnerCfg - For high-speed running (up to 5 m/s)
 """
 
 from isaaclab.utils import configclass
@@ -182,6 +183,67 @@ class DigitMinimalPPORunnerCfg(RslRlOnPolicyRunnerCfg):
         num_learning_epochs=4,    # Fewer epochs per update (was 5)
         num_mini_batches=4,       # Fewer mini-batches (was 8)
         learning_rate=3.0e-3,     # Higher LR for faster learning
+        schedule="adaptive",
+        desired_kl=0.01,
+        max_grad_norm=1.0,
+        gamma=0.99,
+        lam=0.95,
+    )
+
+
+@configclass
+class DigitRunningPPORunnerCfg(RslRlOnPolicyRunnerCfg):
+    """PPO configuration for Digit high-speed running (target: 30 mph / 13.4 m/s).
+
+    CURRICULUM TRAINING - Update velocity_env_cfg.py after each phase:
+    ================================================================
+    Phase 1: lin_vel_x=(0.0, 2.0)   Walking         5000 iter
+    Phase 2: lin_vel_x=(0.0, 5.0)   Jogging         5000 iter
+    Phase 3: lin_vel_x=(0.0, 8.0)   Fast running    5000 iter
+    Phase 4: lin_vel_x=(0.0, 10.0)  Sprint warmup   5000 iter
+    Phase 5: lin_vel_x=(0.0, 13.5)  30 mph sprint   10000+ iter
+    ================================================================
+
+    After each phase:
+    1. Update lin_vel_x in CommandsRunningCfg (velocity_env_cfg.py)
+    2. Resume training: --checkpoint <last_model.pt>
+
+    Configuration:
+    - Large network [1024, 512, 256] for complex sprint dynamics
+    - 8192 envs for ~16GB GPU memory usage
+    - 5000 iterations per phase
+    """
+
+    # Runner settings
+    num_steps_per_env = 24  # Balanced for running
+    max_iterations = 5000   # Per phase (extend with --max_iterations)
+    save_interval = 50      # Frequent checkpoints for analysis
+    experiment_name = "digit_running"
+    run_name = ""
+    logger = "tensorboard"
+    neptune_project = ""
+    wandb_project = ""
+    resume = False
+
+    empirical_normalization = False
+
+    # Large network for high-speed sprint dynamics
+    policy: RslRlPpoActorCriticCfg = RslRlPpoActorCriticCfg(
+        init_noise_std=1.0,
+        actor_hidden_dims=[1024, 512, 256],   # Large network for 30 mph
+        critic_hidden_dims=[1024, 512, 256],  # Large network for 30 mph
+        activation="elu",
+    )
+
+    # PPO algorithm for running
+    algorithm: RslRlPpoAlgorithmCfg = RslRlPpoAlgorithmCfg(
+        value_loss_coef=1.0,
+        use_clipped_value_loss=True,
+        clip_param=0.2,
+        entropy_coef=0.01,
+        num_learning_epochs=5,
+        num_mini_batches=4,
+        learning_rate=1.0e-3,     # Standard LR
         schedule="adaptive",
         desired_kl=0.01,
         max_grad_norm=1.0,
