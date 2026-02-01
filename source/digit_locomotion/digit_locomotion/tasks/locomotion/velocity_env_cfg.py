@@ -187,8 +187,8 @@ class CommandsRunningCfg:
         heading_control_stiffness=0.5,
         debug_vis=True,
         ranges=mdp.UniformVelocityCommandCfg.Ranges(
-            # PHASE 1: Walking (0-2 m/s) - START HERE
-            lin_vel_x=(0.0, 2.0),
+            # PHASE 1: Jogging (0-5 m/s) - START HERE
+            lin_vel_x=(0.0, 5.0),
             lin_vel_y=(-0.2, 0.2),        # m/s lateral (minimal for stability)
             ang_vel_z=(-0.3, 0.3),        # rad/s yaw (minimal for stability)
             heading=(-math.pi, math.pi),
@@ -389,52 +389,66 @@ class RewardsCfg:
 
 @configclass
 class RewardsRunningCfg:
-    """Reward function configuration for running gait.
+    """Reward function configuration for running gait with natural arm swing.
 
-    PHASE 1 (current): Learn stable walking with slightly higher speeds
-    - Use same rewards as walking to establish stable gait first
-    - Once walking is stable, transition to running-specific rewards
+    Includes arm swing coordination reward to encourage human-like movement:
+    - Arms swing in opposition to legs (left leg forward -> right arm forward)
+    - Provides balance and is more energy efficient
 
-    Key adjustments for running (after walking is learned):
-    - Lower flat_orientation penalty (allow forward lean)
-    - Higher feet_air_time reward (encourage flight phases)
-    - Lower vertical velocity penalty (running has more vertical motion)
+    Key features:
+    - Arm swing coordination reward for natural movement
+    - Slight penalty for deviation from default joint positions
+    - Standard locomotion rewards for velocity tracking and stability
     """
 
     # === Tracking Rewards (Primary Objectives) ===
     track_lin_vel_xy_exp = RewardTermCfg(
         func=mdp.track_lin_vel_xy_exp,
-        weight=1.5,  # Same as walking for stability
+        weight=1.5,
         params={"command_name": "base_velocity", "std": math.sqrt(0.25)},
     )
     track_ang_vel_z_exp = RewardTermCfg(
         func=mdp.track_ang_vel_z_exp,
-        weight=0.75,  # Same as walking
+        weight=0.75,
         params={"command_name": "base_velocity", "std": math.sqrt(0.25)},
     )
 
-    # === Stability Penalties - START WITH WALKING VALUES ===
+    # === Arm Swing Coordination (Natural Movement) ===
+    arm_swing = RewardTermCfg(
+        func=mdp.arm_swing_coordination,
+        weight=0.3,  # Moderate weight to encourage but not dominate
+        params={"command_name": "base_velocity"},
+    )
+
+    # === Default Pose Penalty (Prevent Extreme Arm Positions) ===
+    joint_default = RewardTermCfg(
+        func=mdp.joint_default_position,
+        weight=-0.05,  # Small penalty to gently guide toward natural poses
+        params={"asset_cfg": SceneEntityCfg("robot")},
+    )
+
+    # === Stability Penalties ===
     lin_vel_z_l2 = RewardTermCfg(
         func=mdp.lin_vel_z_l2,
-        weight=-2.0,  # Same as walking (penalize bouncing initially)
+        weight=-2.0,
     )
     ang_vel_xy_l2 = RewardTermCfg(
         func=mdp.ang_vel_xy_l2,
-        weight=-0.05,  # Same as walking
+        weight=-0.05,
     )
     flat_orientation_l2 = RewardTermCfg(
         func=mdp.flat_orientation_l2,
-        weight=-0.5,  # Slightly relaxed from walking (-1.0) but not too much
+        weight=-0.5,
     )
 
     # === Gait Quality ===
     feet_air_time = RewardTermCfg(
         func=mdp.feet_air_time,
-        weight=0.125,  # Same as walking (don't over-reward air time yet)
+        weight=0.125,
         params={
             "sensor_cfg": SceneEntityCfg("contact_forces", body_names=".*_leg_toe_roll"),
             "command_name": "base_velocity",
-            "threshold": 0.5,  # Same as walking
+            "threshold": 0.5,
         },
     )
 
@@ -778,6 +792,11 @@ class DigitMinimalEnvCfg(DigitFlatEnvCfg):
 class DigitRunningEnvCfg(DigitFlatEnvCfg):
     """Environment configuration for high-speed running (target: 30 mph / 13.4 m/s).
 
+    Features natural arm swing coordination:
+    - Full body control (50 DOF including arms)
+    - Arm swing reward encourages human-like opposite arm/leg movement
+    - Joint default position penalty prevents extreme arm poses
+
     Uses curriculum training - manually update lin_vel_x after each phase:
     Phase 1: (0.0, 2.0)   Walking
     Phase 2: (0.0, 5.0)   Jogging
@@ -788,12 +807,7 @@ class DigitRunningEnvCfg(DigitFlatEnvCfg):
     Configuration:
     - 16384 envs for faster training
     - Large network [1024, 512, 256] for complex dynamics
-
-    Key differences from walking:
-    - Running requires flight phases (both feet off ground)
-    - Forward lean is necessary for high-speed stability
-    - Higher vertical motion is expected
-    - Faster action corrections needed
+    - Full body control with arm swing coordination reward
     """
 
     # 16384 envs for faster training
@@ -802,7 +816,11 @@ class DigitRunningEnvCfg(DigitFlatEnvCfg):
     # High-speed velocity commands
     commands: CommandsRunningCfg = CommandsRunningCfg()
 
-    # Running-optimized rewards
+    # Full body control (50 DOF) - needed for natural arm swing
+    # Arm swing coordination is encouraged via rewards
+    actions: ActionsCfg = ActionsCfg()
+
+    # Running-optimized rewards with arm swing coordination
     rewards: RewardsRunningCfg = RewardsRunningCfg()
 
     # Running-optimized terminations (higher tilt tolerance)

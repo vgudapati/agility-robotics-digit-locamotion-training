@@ -421,3 +421,116 @@ def stand_still_penalty(
     motion_penalty = torch.sum(torch.square(robot.data.joint_vel), dim=1)
 
     return motion_penalty * should_stand.float()
+
+
+# =============================================================================
+# ARM SWING COORDINATION
+# =============================================================================
+
+def arm_swing_coordination(
+    env: ManagerBasedRLEnv,
+    command_name: str,
+) -> torch.Tensor:
+    """Reward natural arm swing in opposition to legs (like human walking/running).
+
+    When walking/running, humans swing their arms opposite to their legs:
+    - Left leg forward -> Right arm forward
+    - Right leg forward -> Left arm forward
+
+    This creates counter-rotation that helps balance and is more energy efficient.
+
+    The reward is computed by checking if:
+    - left_hip_pitch velocity * right_shoulder_pitch velocity > 0 (same direction)
+    - right_hip_pitch velocity * left_shoulder_pitch velocity > 0 (same direction)
+
+    Joint names for Digit V4:
+    - Leg pitch: left_hip_pitch, right_hip_pitch
+    - Arm pitch: left_shoulder_pitch, right_shoulder_pitch
+
+    Args:
+        env: The environment instance.
+        command_name: Name of the velocity command (to disable when standing).
+
+    Returns:
+        Reward for coordinated arm swing (positive when properly coordinated).
+    """
+    robot = env.scene["robot"]
+
+    # Get joint velocities
+    joint_vel = robot.data.joint_vel
+    joint_names = robot.data.joint_names
+
+    # Find joint indices for hip and shoulder pitch joints
+    # These control the forward/backward swing motion
+    left_hip_pitch_idx = None
+    right_hip_pitch_idx = None
+    left_shoulder_pitch_idx = None
+    right_shoulder_pitch_idx = None
+
+    for i, name in enumerate(joint_names):
+        if "left_hip_pitch" in name:
+            left_hip_pitch_idx = i
+        elif "right_hip_pitch" in name:
+            right_hip_pitch_idx = i
+        elif "left_shoulder_pitch" in name:
+            left_shoulder_pitch_idx = i
+        elif "right_shoulder_pitch" in name:
+            right_shoulder_pitch_idx = i
+
+    # If joints not found, return zero reward
+    if any(idx is None for idx in [left_hip_pitch_idx, right_hip_pitch_idx,
+                                    left_shoulder_pitch_idx, right_shoulder_pitch_idx]):
+        return torch.zeros(env.num_envs, device=env.device)
+
+    # Get velocities for the relevant joints
+    left_hip_vel = joint_vel[:, left_hip_pitch_idx]
+    right_hip_vel = joint_vel[:, right_hip_pitch_idx]
+    left_shoulder_vel = joint_vel[:, left_shoulder_pitch_idx]
+    right_shoulder_vel = joint_vel[:, right_shoulder_pitch_idx]
+
+    # Compute coordination reward:
+    # - Left hip and right shoulder should move in SAME direction
+    # - Right hip and left shoulder should move in SAME direction
+    # Using product of velocities: positive when same direction, negative when opposite
+    coordination_left = left_hip_vel * right_shoulder_vel  # Should be positive
+    coordination_right = right_hip_vel * left_shoulder_vel  # Should be positive
+
+    # Reward is sum of coordination scores (positive = good coordination)
+    # Use tanh to bound the reward and provide smooth gradients
+    reward = torch.tanh(coordination_left) + torch.tanh(coordination_right)
+
+    # Only reward when robot should be moving
+    cmd_vel = env.command_manager.get_command(command_name)
+    moving = torch.norm(cmd_vel[:, :2], dim=1) > 0.1
+
+    return reward * moving.float()
+
+
+def joint_default_position(
+    env: ManagerBasedRLEnv,
+    asset_cfg: SceneEntityCfg,
+) -> torch.Tensor:
+    """Penalize joints deviating from their default positions.
+
+    This helps keep arms in a natural position and prevents extreme poses.
+    The penalty is the squared distance from default joint positions.
+
+    Args:
+        env: The environment instance.
+        asset_cfg: Configuration for the robot asset.
+
+    Returns:
+        Squared deviation from default positions.
+    """
+    asset = env.scene[asset_cfg.name]
+
+    # Get current joint positions
+    joint_pos = asset.data.joint_pos
+
+    # Get default joint positions
+    default_joint_pos = asset.data.default_joint_pos
+
+    # Compute squared deviation
+    deviation = torch.sum(torch.square(joint_pos - default_joint_pos), dim=1)
+
+    return deviation
