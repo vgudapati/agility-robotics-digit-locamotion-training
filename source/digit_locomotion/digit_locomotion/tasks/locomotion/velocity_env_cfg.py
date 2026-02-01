@@ -786,7 +786,7 @@ class DigitRunningEnvCfg(DigitFlatEnvCfg):
     Phase 5: (0.0, 13.5)  30 mph sprint
 
     Configuration:
-    - 8192 envs for ~16GB GPU memory usage
+    - 16384 envs for faster training
     - Large network [1024, 512, 256] for complex dynamics
 
     Key differences from walking:
@@ -796,8 +796,8 @@ class DigitRunningEnvCfg(DigitFlatEnvCfg):
     - Faster action corrections needed
     """
 
-    # 8192 envs for ~16GB GPU memory
-    scene: DigitSceneCfg = DigitSceneCfg(num_envs=8192, env_spacing=2.5)
+    # 16384 envs for faster training
+    scene: DigitSceneCfg = DigitSceneCfg(num_envs=16384, env_spacing=2.5)
 
     # High-speed velocity commands
     commands: CommandsRunningCfg = CommandsRunningCfg()

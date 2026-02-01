@@ -197,11 +197,11 @@ class DigitRunningPPORunnerCfg(RslRlOnPolicyRunnerCfg):
 
     CURRICULUM TRAINING - Update velocity_env_cfg.py after each phase:
     ================================================================
-    Phase 1: lin_vel_x=(0.0, 2.0)   Walking         5000 iter
-    Phase 2: lin_vel_x=(0.0, 5.0)   Jogging         5000 iter
-    Phase 3: lin_vel_x=(0.0, 8.0)   Fast running    5000 iter
-    Phase 4: lin_vel_x=(0.0, 10.0)  Sprint warmup   5000 iter
-    Phase 5: lin_vel_x=(0.0, 13.5)  30 mph sprint   10000+ iter
+    Phase 1: lin_vel_x=(0.0, 2.0)   Walking         1000 iter (adjust as needed)
+    Phase 2: lin_vel_x=(0.0, 5.0)   Jogging         TBD iter
+    Phase 3: lin_vel_x=(0.0, 8.0)   Fast running    TBD iter
+    Phase 4: lin_vel_x=(0.0, 10.0)  Sprint warmup   TBD iter
+    Phase 5: lin_vel_x=(0.0, 13.5)  30 mph sprint   TBD iter
     ================================================================
 
     After each phase:
@@ -210,13 +210,13 @@ class DigitRunningPPORunnerCfg(RslRlOnPolicyRunnerCfg):
 
     Configuration:
     - Large network [1024, 512, 256] for complex sprint dynamics
-    - 8192 envs for ~16GB GPU memory usage
-    - 5000 iterations per phase
+    - 16384 envs for faster training
+    - 1000 iterations per phase (quick iteration to find optimal counts)
     """
 
     # Runner settings
     num_steps_per_env = 24  # Balanced for running
-    max_iterations = 5000   # Per phase (extend with --max_iterations)
+    max_iterations = 1000   # Quick iteration loop (adjust per phase as needed)
     save_interval = 50      # Frequent checkpoints for analysis
     experiment_name = "digit_running"
     run_name = ""
