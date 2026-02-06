@@ -476,7 +476,7 @@ class DigitBaselineEnvCfg(ManagerBasedRLEnvCfg):
     Use with Digit-Baseline-v0 task ID.
     """
 
-    scene: BaselineSceneCfg = BaselineSceneCfg(num_envs=8192, env_spacing=2.5)
+    scene: BaselineSceneCfg = BaselineSceneCfg(num_envs=16384, env_spacing=2.5)
     observations: BaselineObservationsCfg = BaselineObservationsCfg()
     actions: BaselineActionsCfg = BaselineActionsCfg()
     commands: BaselineCommandsCfg = BaselineCommandsCfg()
@@ -560,6 +560,53 @@ class DigitBaselineFastWalkingEnvCfg(DigitBaselineEnvCfg):
     """
 
     commands: BaselineFastWalkingCommandsCfg = BaselineFastWalkingCommandsCfg()
+
+    def __post_init__(self):
+        super().__post_init__()
+        self.episode_length_s = 20.0
+
+
+# =============================================================================
+# SLOW JOGGING ENVIRONMENTS (Intermediate Curriculum Step)
+# =============================================================================
+
+@configclass
+class BaselineSlowJoggingCommandsCfg:
+    """Velocity commands for slow jogging: 0-2.5 m/s forward.
+
+    Intermediate step between fast walking (0-2 m/s) and jogging (0-3 m/s).
+    This smaller 0.5 m/s increment helps the policy adapt more gradually.
+    """
+
+    base_velocity = mdp.UniformVelocityCommandCfg(
+        asset_name="robot",
+        resampling_time_range=(10.0, 10.0),
+        rel_standing_envs=0.02,
+        rel_heading_envs=1.0,
+        heading_command=True,
+        heading_control_stiffness=0.5,
+        debug_vis=True,
+        ranges=mdp.UniformVelocityCommandCfg.Ranges(
+            lin_vel_x=(0.0, 2.5),        # Slow jogging: 0-2.5 m/s forward
+            lin_vel_y=(-0.35, 0.35),     # Between fast walking and jogging
+            ang_vel_z=(-0.55, 0.55),     # Between fast walking and jogging
+            heading=(-math.pi, math.pi),
+        ),
+    )
+
+
+@configclass
+class DigitBaselineSlowJoggingEnvCfg(DigitBaselineEnvCfg):
+    """Baseline slow jogging environment - intermediate curriculum step.
+
+    Extends baseline approach to slow jogging speeds (0-2.5 m/s).
+    Bridges the gap between fast walking (2 m/s) and jogging (3 m/s).
+    Continue training from fast walking checkpoint for smooth curriculum.
+
+    Use with Digit-BaselineSlowJogging-v0 task ID.
+    """
+
+    commands: BaselineSlowJoggingCommandsCfg = BaselineSlowJoggingCommandsCfg()
 
     def __post_init__(self):
         super().__post_init__()

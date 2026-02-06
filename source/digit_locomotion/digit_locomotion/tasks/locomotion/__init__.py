@@ -23,6 +23,7 @@ from .baseline_env_cfg import (
     DigitBaselineEnvCfg,
     DigitBaselineTeacherEnvCfg,
     DigitBaselineFastWalkingEnvCfg,
+    DigitBaselineSlowJoggingEnvCfg,
     DigitBaselineJoggingEnvCfg,
     DigitBaselineRunningEnvCfg,
     DigitBaselineFastRunningEnvCfg,
@@ -223,6 +224,18 @@ gym.register(
     },
 )
 
+# Baseline curriculum: Slow Jogging (0-2.5 m/s) - Intermediate step
+gym.register(
+    id="Digit-BaselineSlowJogging-v0",
+    entry_point="isaaclab.envs:ManagerBasedRLEnv",
+    disable_env_checker=True,
+    kwargs={
+        "env_cfg_entry_point": f"{__name__}.baseline_env_cfg:DigitBaselineSlowJoggingEnvCfg",
+        # Same architecture as teacher/student for checkpoint compatibility
+        "rsl_rl_cfg_entry_point": f"{__name__.rsplit('.', 2)[0]}.agents.baseline_cfg:DigitBaselineTeacherPPORunnerCfg",
+    },
+)
+
 # Baseline curriculum: Jogging (0-3 m/s)
 gym.register(
     id="Digit-BaselineJogging-v0",
@@ -276,6 +289,7 @@ __all__ = [
     "DigitBaselineEnvCfg",
     "DigitBaselineTeacherEnvCfg",
     "DigitBaselineFastWalkingEnvCfg",
+    "DigitBaselineSlowJoggingEnvCfg",
     "DigitBaselineJoggingEnvCfg",
     "DigitBaselineRunningEnvCfg",
     "DigitBaselineFastRunningEnvCfg",
