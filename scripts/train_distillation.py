@@ -458,6 +458,161 @@ class AdaptiveLRScheduler:
         }
 
 
+class MultiMetricMonitor:
+    """Monitor multiple metrics for early warning of training collapse.
+
+    Tracks:
+    - flat_orientation_l2: Forward/backward body lean
+    - arm_shoulder_roll: Arms flaring sideways for balance
+    - ang_vel_xy_l2: Body roll/pitch instability
+    - is_alive: Survival rate
+
+    Triggers early warning when 2+ metrics degrade significantly.
+    """
+
+    def __init__(
+        self,
+        env,
+        window_size: int = 20,
+        degradation_threshold: float = 1.3,  # 30% worse than best
+    ):
+        self.env = env
+        self.window_size = window_size
+        self.degradation_threshold = degradation_threshold
+
+        # History for each metric (lower is better for penalties)
+        self.flat_orientation_history = []
+        self.arm_roll_history = []
+        self.ang_vel_xy_history = []
+        self.is_alive_history = []
+
+        # Best values (for penalties, best = lowest magnitude)
+        self.best_flat_orientation = float('inf')
+        self.best_arm_roll = float('inf')
+        self.best_ang_vel_xy = float('inf')
+        self.best_is_alive = 0.0  # Higher is better
+
+        # Warning state
+        self.warning_count = 0
+        self.last_warning_iteration = 0
+
+    def compute_metrics(self) -> dict:
+        """Compute current metric values from environment state."""
+        try:
+            robot = self.env.unwrapped.scene["robot"]
+
+            # Flat orientation: squared xy components of projected gravity
+            # Lower is better (more upright)
+            projected_gravity = robot.data.projected_gravity_b
+            flat_orientation = torch.sum(torch.square(projected_gravity[:, :2]), dim=1).mean().item()
+
+            # Angular velocity xy: body roll/pitch rate
+            # Lower is better (more stable)
+            ang_vel_xy = torch.sum(torch.square(robot.data.root_ang_vel_b[:, :2]), dim=1).mean().item()
+
+            # Arm shoulder roll: Get from joint positions
+            # This requires finding the shoulder roll joints
+            joint_names = robot.data.joint_names
+            joint_pos = robot.data.joint_pos
+
+            arm_roll = 0.0
+            arm_roll_count = 0
+            for i, name in enumerate(joint_names):
+                if "shoulder" in name.lower() and "roll" in name.lower():
+                    arm_roll += torch.abs(joint_pos[:, i]).mean().item()
+                    arm_roll_count += 1
+            if arm_roll_count > 0:
+                arm_roll /= arm_roll_count
+
+            # Is alive: percentage of environments still running
+            # Higher is better
+            episode_length_buf = self.env.unwrapped.episode_length_buf
+            max_episode_length = self.env.unwrapped.max_episode_length
+            is_alive = (episode_length_buf.float() / max_episode_length).mean().item()
+
+            return {
+                "flat_orientation": flat_orientation,
+                "arm_roll": arm_roll,
+                "ang_vel_xy": ang_vel_xy,
+                "is_alive": is_alive,
+            }
+
+        except Exception as e:
+            # Return neutral values if computation fails
+            return {
+                "flat_orientation": 0.0,
+                "arm_roll": 0.0,
+                "ang_vel_xy": 0.0,
+                "is_alive": 1.0,
+            }
+
+    def update(self, iteration: int) -> dict:
+        """Update metrics and check for degradation."""
+        metrics = self.compute_metrics()
+
+        # Add to history
+        self.flat_orientation_history.append(metrics["flat_orientation"])
+        self.arm_roll_history.append(metrics["arm_roll"])
+        self.ang_vel_xy_history.append(metrics["ang_vel_xy"])
+        self.is_alive_history.append(metrics["is_alive"])
+
+        # Update best values
+        if metrics["flat_orientation"] < self.best_flat_orientation:
+            self.best_flat_orientation = metrics["flat_orientation"]
+        if metrics["arm_roll"] < self.best_arm_roll:
+            self.best_arm_roll = metrics["arm_roll"]
+        if metrics["ang_vel_xy"] < self.best_ang_vel_xy:
+            self.best_ang_vel_xy = metrics["ang_vel_xy"]
+        if metrics["is_alive"] > self.best_is_alive:
+            self.best_is_alive = metrics["is_alive"]
+
+        # Check for degradation (need enough history)
+        warning = None
+        if len(self.flat_orientation_history) >= self.window_size:
+            degraded_metrics = []
+
+            # For penalties: current > best * threshold means degradation
+            current_orientation = sum(self.flat_orientation_history[-self.window_size:]) / self.window_size
+            if self.best_flat_orientation > 0 and current_orientation > self.best_flat_orientation * self.degradation_threshold:
+                degraded_metrics.append(f"flat_orientation ({current_orientation:.4f} vs best {self.best_flat_orientation:.4f})")
+
+            current_arm_roll = sum(self.arm_roll_history[-self.window_size:]) / self.window_size
+            if self.best_arm_roll > 0 and current_arm_roll > self.best_arm_roll * self.degradation_threshold:
+                degraded_metrics.append(f"arm_roll ({current_arm_roll:.4f} vs best {self.best_arm_roll:.4f})")
+
+            current_ang_vel = sum(self.ang_vel_xy_history[-self.window_size:]) / self.window_size
+            if self.best_ang_vel_xy > 0 and current_ang_vel > self.best_ang_vel_xy * self.degradation_threshold:
+                degraded_metrics.append(f"ang_vel_xy ({current_ang_vel:.4f} vs best {self.best_ang_vel_xy:.4f})")
+
+            # For is_alive: current < best * (2 - threshold) means degradation
+            current_alive = sum(self.is_alive_history[-self.window_size:]) / self.window_size
+            alive_threshold = self.best_is_alive * (2 - self.degradation_threshold)  # ~0.7 of best
+            if current_alive < alive_threshold:
+                degraded_metrics.append(f"is_alive ({current_alive:.4f} vs best {self.best_is_alive:.4f})")
+
+            # Trigger warning if 2+ metrics degraded
+            if len(degraded_metrics) >= 2 and iteration - self.last_warning_iteration > 50:
+                self.warning_count += 1
+                self.last_warning_iteration = iteration
+                warning = {
+                    "level": "WARNING" if len(degraded_metrics) == 2 else "CRITICAL",
+                    "degraded_metrics": degraded_metrics,
+                    "count": len(degraded_metrics),
+                }
+
+        metrics["warning"] = warning
+        return metrics
+
+    def get_status_string(self, metrics: dict) -> str:
+        """Get a compact status string for logging."""
+        return (
+            f"orient={metrics['flat_orientation']:.4f} "
+            f"arm_roll={metrics['arm_roll']:.4f} "
+            f"ang_vel={metrics['ang_vel_xy']:.4f} "
+            f"alive={metrics['is_alive']:.3f}"
+        )
+
+
 def train_with_adaptive_lr(
     runner,
     max_iterations: int,
@@ -499,9 +654,18 @@ def train_with_adaptive_lr(
     lr_reductions = 0
     rollbacks = 0
     total_iterations = 0
+    metric_warnings = 0
+
+    # Initialize multi-metric monitor for early warning
+    metric_monitor = MultiMetricMonitor(
+        env=runner.env,
+        window_size=20,
+        degradation_threshold=1.3,  # 30% worse than best triggers warning
+    )
 
     print(f"\n{'='*60}")
     print("ADAPTIVE LEARNING RATE ENABLED (Chunked Training)")
+    print(f"  + Multi-Metric Early Warning System")
     print(f"{'='*60}")
     print(f"  LR range: [{lr_min:.2e}, {lr_max:.2e}]")
     print(f"  Decay factor: {lr_decay_factor}x on collapse")
@@ -558,8 +722,33 @@ def train_with_adaptive_lr(
 
         ratio_to_peak = current_avg / max(1.0, peak_ep_length)
 
+        # Update multi-metric monitor
+        metrics = metric_monitor.update(total_iterations)
+        metric_status = metric_monitor.get_status_string(metrics)
+
+        # Check for metric-based early warning
+        early_warning_triggered = False
+        if metrics["warning"]:
+            warning = metrics["warning"]
+            metric_warnings += 1
+            print(f"\n{'*'*60}")
+            print(f"[Multi-Metric] {warning['level']}: {warning['count']} metrics degraded!")
+            for m in warning["degraded_metrics"]:
+                print(f"  - {m}")
+            print(f"{'*'*60}")
+
+            # If CRITICAL (3+ metrics), reduce LR preemptively
+            if warning["level"] == "CRITICAL":
+                early_warning_triggered = True
+                new_lr = max(lr_min, current_lr * lr_decay_factor)
+                for param_group in runner.alg.optimizer.param_groups:
+                    param_group['lr'] = new_lr
+                print(f"[Multi-Metric] Preemptive LR reduction: {current_lr:.2e} -> {new_lr:.2e}")
+                current_lr = new_lr
+                lr_reductions += 1
+
         # Check for severe collapse - rollback
-        if ratio_to_peak < rollback_threshold and best_checkpoint_path and len(ep_length_history) > 20:
+        if not early_warning_triggered and ratio_to_peak < rollback_threshold and best_checkpoint_path and len(ep_length_history) > 20:
             print(f"\n{'!'*60}")
             print(f"[Adaptive LR] SEVERE COLLAPSE DETECTED!")
             print(f"  Current avg: {current_avg:.1f}, Peak: {peak_ep_length:.1f} (ratio: {ratio_to_peak:.2f})")
@@ -601,6 +790,7 @@ def train_with_adaptive_lr(
 
         # Status update
         print(f"[Adaptive LR] Status: LR={current_lr:.2e}, EP len avg={current_avg:.1f}, Peak={peak_ep_length:.1f}")
+        print(f"[Multi-Metric] {metric_status}")
 
     elapsed = time.time() - start_time
 
@@ -615,6 +805,7 @@ def train_with_adaptive_lr(
     scheduler.best_ep_length = best_ep_length
     scheduler.lr_reductions = lr_reductions
     scheduler.rollbacks = rollbacks
+    scheduler.metric_warnings = metric_warnings
 
     def get_stats():
         return {
@@ -623,6 +814,7 @@ def train_with_adaptive_lr(
             "best_ep_length": scheduler.best_ep_length,
             "lr_reductions": scheduler.lr_reductions,
             "rollbacks": scheduler.rollbacks,
+            "metric_warnings": scheduler.metric_warnings,
         }
     scheduler.get_stats = get_stats
 
@@ -636,6 +828,7 @@ def train_with_adaptive_lr(
     print(f"  Best episode length: {best_ep_length:.0f}")
     print(f"  LR reductions: {lr_reductions}")
     print(f"  Checkpoint rollbacks: {rollbacks}")
+    print(f"  Metric warnings: {metric_warnings}")
     print(f"{'='*60}\n")
 
     return scheduler
