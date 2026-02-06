@@ -165,35 +165,134 @@ class CommandsCfg:
     )
 
 
+# =============================================================================
+# CURRICULUM PHASE COMMANDS
+# =============================================================================
+# Each phase has its own velocity range. Use different --task to switch phases.
+# Resume from checkpoint when progressing to the next phase.
+
+
 @configclass
-class CommandsRunningCfg:
-    """Configuration for high-speed running velocity commands.
-
-    TARGET: 30 mph = 13.4 m/s (faster than Usain Bolt!)
-
-    CURRICULUM APPROACH - Manually update lin_vel_x after each phase:
-    Phase 1: (0.0, 2.0)   - Walking, learn balance (5000 iter)
-    Phase 2: (0.0, 5.0)   - Jogging/running (5000 iter)
-    Phase 3: (0.0, 8.0)   - Fast running (5000 iter)
-    Phase 4: (0.0, 10.0)  - Sprint warmup (5000 iter)
-    Phase 5: (0.0, 13.5)  - Full sprint 30 mph (10000+ iter)
-
-    After each phase, update lin_vel_x and resume from checkpoint.
-    """
+class CommandsWalkingCfg:
+    """Phase 1: Walking (0-2 m/s) - Learn balance and basic locomotion."""
 
     base_velocity = mdp.UniformVelocityCommandCfg(
         asset_name="robot",
-        resampling_time_range=(8.0, 12.0),  # Vary command timing
-        rel_standing_envs=0.02,  # 2% standing to learn balance
+        resampling_time_range=(8.0, 12.0),
+        rel_standing_envs=0.02,
         rel_heading_envs=1.0,
         heading_command=True,
         heading_control_stiffness=0.5,
         debug_vis=True,
         ranges=mdp.UniformVelocityCommandCfg.Ranges(
-            # PHASE 1: Jogging (0-5 m/s) - START HERE
-            lin_vel_x=(0.0, 5.0),
-            lin_vel_y=(-0.2, 0.2),        # m/s lateral (minimal for stability)
-            ang_vel_z=(-0.3, 0.3),        # rad/s yaw (minimal for stability)
+            lin_vel_x=(0.0, 2.0),         # Walking speed
+            lin_vel_y=(-0.2, 0.2),
+            ang_vel_z=(-0.3, 0.3),
+            heading=(-math.pi, math.pi),
+        ),
+    )
+
+
+@configclass
+class CommandsJoggingIntroCfg:
+    """Phase 1.75: Jogging Intro (0-3 m/s) - Bridge to faster jogging."""
+
+    base_velocity = mdp.UniformVelocityCommandCfg(
+        asset_name="robot",
+        resampling_time_range=(8.0, 12.0),
+        rel_standing_envs=0.02,
+        rel_heading_envs=1.0,
+        heading_command=True,
+        heading_control_stiffness=0.5,
+        debug_vis=True,
+        ranges=mdp.UniformVelocityCommandCfg.Ranges(
+            lin_vel_x=(0.0, 3.0),         # Bridge speed (0-3 m/s)
+            lin_vel_y=(-0.2, 0.2),
+            ang_vel_z=(-0.3, 0.3),
+            heading=(-math.pi, math.pi),
+        ),
+    )
+
+
+@configclass
+class CommandsJoggingCfg:
+    """Phase 2: Jogging (0-5 m/s) - Transition to running gait."""
+
+    base_velocity = mdp.UniformVelocityCommandCfg(
+        asset_name="robot",
+        resampling_time_range=(8.0, 12.0),
+        rel_standing_envs=0.02,
+        rel_heading_envs=1.0,
+        heading_command=True,
+        heading_control_stiffness=0.5,
+        debug_vis=True,
+        ranges=mdp.UniformVelocityCommandCfg.Ranges(
+            lin_vel_x=(0.0, 5.0),         # Jogging speed
+            lin_vel_y=(-0.2, 0.2),
+            ang_vel_z=(-0.3, 0.3),
+            heading=(-math.pi, math.pi),
+        ),
+    )
+
+
+@configclass
+class CommandsRunningCfg:
+    """Phase 3: Running (0-8 m/s) - Fast running gait."""
+
+    base_velocity = mdp.UniformVelocityCommandCfg(
+        asset_name="robot",
+        resampling_time_range=(8.0, 12.0),
+        rel_standing_envs=0.02,
+        rel_heading_envs=1.0,
+        heading_command=True,
+        heading_control_stiffness=0.5,
+        debug_vis=True,
+        ranges=mdp.UniformVelocityCommandCfg.Ranges(
+            lin_vel_x=(0.0, 8.0),         # Running speed
+            lin_vel_y=(-0.2, 0.2),
+            ang_vel_z=(-0.3, 0.3),
+            heading=(-math.pi, math.pi),
+        ),
+    )
+
+
+@configclass
+class CommandsFastRunningCfg:
+    """Phase 4: Fast Running (0-10 m/s) - Sprint warmup."""
+
+    base_velocity = mdp.UniformVelocityCommandCfg(
+        asset_name="robot",
+        resampling_time_range=(8.0, 12.0),
+        rel_standing_envs=0.02,
+        rel_heading_envs=1.0,
+        heading_command=True,
+        heading_control_stiffness=0.5,
+        debug_vis=True,
+        ranges=mdp.UniformVelocityCommandCfg.Ranges(
+            lin_vel_x=(0.0, 10.0),        # Fast running speed
+            lin_vel_y=(-0.2, 0.2),
+            ang_vel_z=(-0.3, 0.3),
+            heading=(-math.pi, math.pi),
+        ),
+    )
+
+
+@configclass
+class CommandsSprintCfg:
+    """Phase 5: Sprint (0-13.5 m/s) - Full speed 30 mph."""
+
+    base_velocity = mdp.UniformVelocityCommandCfg(
+        asset_name="robot",
+        resampling_time_range=(8.0, 12.0),
+        rel_standing_envs=0.02,
+        rel_heading_envs=1.0,
+        heading_command=True,
+        heading_control_stiffness=0.5,
+        debug_vis=True,
+        ranges=mdp.UniformVelocityCommandCfg.Ranges(
+            lin_vel_x=(0.0, 13.5),        # Sprint speed (30 mph)
+            lin_vel_y=(-0.2, 0.2),
+            ang_vel_z=(-0.3, 0.3),
             heading=(-math.pi, math.pi),
         ),
     )
@@ -366,8 +465,8 @@ class RewardsCfg:
         weight=-2.5e-7,
     )
     joint_torques_l2 = RewardTermCfg(
-        func=mdp.applied_torque_limits,
-        weight=-1e-5,
+        func=mdp.joint_torques_l2,
+        weight=-1e-6,  # Same as Isaac Lab's Digit config
     )
 
     # === Safety Penalties ===
@@ -396,10 +495,12 @@ class RewardsRunningCfg:
 
     Includes arm swing coordination reward to encourage human-like movement:
     - Arms swing in opposition to legs (left leg forward -> right arm forward)
+    - Arms stay close to body (no lateral flailing)
     - Provides balance and is more energy efficient
 
     Key features:
     - Arm swing coordination reward for natural movement
+    - Arm posture rewards to keep arms close to torso
     - Slight penalty for deviation from default joint positions
     - Standard locomotion rewards for velocity tracking and stability
     """
@@ -423,10 +524,25 @@ class RewardsRunningCfg:
         params={"command_name": "base_velocity"},
     )
 
+    # === Arm Posture Rewards (Keep Arms Close to Body) ===
+    arm_close_to_body = RewardTermCfg(
+        func=custom_mdp.arm_close_to_body,
+        weight=0.2,  # Reward keeping arms close to torso
+        params={"command_name": "base_velocity"},
+    )
+    arm_lateral_penalty = RewardTermCfg(
+        func=custom_mdp.arm_lateral_penalty,
+        weight=-0.4,  # Penalize arms extending sideways
+        params={
+            "command_name": "base_velocity",
+            "max_lateral": 0.3,  # ~17 degrees allowed
+        },
+    )
+
     # === Default Pose Penalty (Prevent Extreme Arm Positions) ===
     joint_default = RewardTermCfg(
         func=custom_mdp.joint_default_position,
-        weight=-0.05,  # Small penalty to gently guide toward natural poses
+        weight=-0.08,  # Increased for stronger posture enforcement
         params={"asset_cfg": SceneEntityCfg("robot")},
     )
 
@@ -465,11 +581,276 @@ class RewardsRunningCfg:
         weight=-2.5e-7,  # Same as walking
     )
     joint_torques_l2 = RewardTermCfg(
-        func=mdp.applied_torque_limits,
-        weight=-1e-5,  # Same as walking
+        func=mdp.joint_torques_l2,
+        weight=-1e-6,  # Same as Isaac Lab's Digit config
     )
 
     # === Safety Penalties ===
+    undesired_contacts = RewardTermCfg(
+        func=mdp.undesired_contacts,
+        weight=-1.0,
+        params={
+            "sensor_cfg": SceneEntityCfg(
+                "contact_forces",
+                body_names=[".*_rod", ".*tarsus"],
+            ),
+            "threshold": 1.0,
+        },
+    )
+    joint_pos_limits = RewardTermCfg(
+        func=mdp.joint_pos_limits,
+        weight=-1.0,
+        params={"asset_cfg": SceneEntityCfg("robot")},
+    )
+
+
+@configclass
+class RewardsJoggingCfg:
+    """Reward function configuration for jogging with improved posture.
+
+    Extends running rewards with:
+    - Forward lean proportional to speed (like human jogging)
+    - Bent elbows for efficient arm swing
+    - Arms close to body (no lateral flailing)
+    - Relaxed flat orientation penalty (allows natural body movement)
+    """
+
+    # === Tracking Rewards (Primary Objectives) ===
+    track_lin_vel_xy_exp = RewardTermCfg(
+        func=mdp.track_lin_vel_xy_exp,
+        weight=1.5,
+        params={"command_name": "base_velocity", "std": math.sqrt(0.25)},
+    )
+    track_ang_vel_z_exp = RewardTermCfg(
+        func=mdp.track_ang_vel_z_exp,
+        weight=0.75,
+        params={"command_name": "base_velocity", "std": math.sqrt(0.25)},
+    )
+
+    # === Arm Swing Coordination (Natural Movement) ===
+    arm_swing = RewardTermCfg(
+        func=custom_mdp.arm_swing_coordination,
+        weight=0.3,
+        params={"command_name": "base_velocity"},
+    )
+
+    # === Jogging Posture Rewards ===
+    forward_lean = RewardTermCfg(
+        func=custom_mdp.forward_lean_reward,
+        weight=0.2,  # Encourage forward lean when moving fast
+        params={
+            "command_name": "base_velocity",
+            "target_lean_per_speed": 0.04,  # ~2.3 degrees per m/s
+            "max_lean": 0.15,  # ~8.5 degrees max
+        },
+    )
+    elbow_bend = RewardTermCfg(
+        func=custom_mdp.elbow_bend_while_moving,
+        weight=0.15,  # Encourage bent elbows
+        params={
+            "command_name": "base_velocity",
+            "target_bend": 0.8,  # ~45 degrees
+        },
+    )
+
+    # === Arm Posture Rewards (Keep Arms Close to Body) ===
+    arm_close_to_body = RewardTermCfg(
+        func=custom_mdp.arm_close_to_body,
+        weight=0.25,  # Reward keeping arms close to torso
+        params={"command_name": "base_velocity"},
+    )
+    arm_lateral_penalty = RewardTermCfg(
+        func=custom_mdp.arm_lateral_penalty,
+        weight=-0.5,  # Penalize arms extending sideways
+        params={
+            "command_name": "base_velocity",
+            "max_lateral": 0.3,  # ~17 degrees allowed
+        },
+    )
+
+    # === Default Pose Penalty (Increased for better arm control) ===
+    joint_default = RewardTermCfg(
+        func=custom_mdp.joint_default_position,
+        weight=-0.08,  # Increased from -0.02 for stronger posture enforcement
+        params={"asset_cfg": SceneEntityCfg("robot")},
+    )
+
+    # === Stability Penalties (Relaxed for jogging) ===
+    lin_vel_z_l2 = RewardTermCfg(
+        func=mdp.lin_vel_z_l2,
+        weight=-1.5,  # Reduced from -2.0 to allow more vertical movement
+    )
+    ang_vel_xy_l2 = RewardTermCfg(
+        func=mdp.ang_vel_xy_l2,
+        weight=-0.03,  # Reduced from -0.05 to allow more body rotation
+    )
+    flat_orientation_l2 = RewardTermCfg(
+        func=mdp.flat_orientation_l2,
+        weight=-0.2,  # Reduced from -0.5 to allow forward lean
+    )
+
+    # === Gait Quality ===
+    feet_air_time = RewardTermCfg(
+        func=mdp.feet_air_time,
+        weight=0.15,  # Slightly higher for jogging (more air time expected)
+        params={
+            "sensor_cfg": SceneEntityCfg("contact_forces", body_names=".*_leg_toe_roll"),
+            "command_name": "base_velocity",
+            "threshold": 0.5,
+        },
+    )
+
+    # === Regularization Penalties ===
+    action_rate_l2 = RewardTermCfg(
+        func=mdp.action_rate_l2,
+        weight=-0.01,
+    )
+    joint_acc_l2 = RewardTermCfg(
+        func=mdp.joint_acc_l2,
+        weight=-2.5e-7,
+    )
+    joint_torques_l2 = RewardTermCfg(
+        func=mdp.joint_torques_l2,
+        weight=-1e-6,
+    )
+
+    # === Safety Penalties ===
+    undesired_contacts = RewardTermCfg(
+        func=mdp.undesired_contacts,
+        weight=-1.0,
+        params={
+            "sensor_cfg": SceneEntityCfg(
+                "contact_forces",
+                body_names=[".*_rod", ".*tarsus"],
+            ),
+            "threshold": 1.0,
+        },
+    )
+    joint_pos_limits = RewardTermCfg(
+        func=mdp.joint_pos_limits,
+        weight=-1.0,
+        params={"asset_cfg": SceneEntityCfg("robot")},
+    )
+
+
+@configclass
+class RewardsJoggingScheduledCfg:
+    """Reward configuration for jogging with SCHEDULED arm posture rewards.
+
+    Use this with --reward_schedule jogging to gradually introduce arm posture
+    rewards after locomotion has stabilized.
+
+    Key differences from RewardsJoggingCfg:
+    - arm_close_to_body: starts at 0 (scheduler ramps to 0.25)
+    - arm_lateral_penalty: starts at 0 (scheduler ramps to -0.5)
+    - elbow_bend: starts at 0 (scheduler ramps to 0.15)
+    - forward_lean: starts at 0 (scheduler ramps to 0.2)
+    - joint_default: starts at -0.02 (scheduler ramps to -0.08)
+
+    This allows the policy to first learn stable locomotion, then gradually
+    adapt to arm posture constraints without catastrophic forgetting.
+    """
+
+    # === Tracking Rewards (Primary Objectives) - Full weight from start ===
+    track_lin_vel_xy_exp = RewardTermCfg(
+        func=mdp.track_lin_vel_xy_exp,
+        weight=1.5,
+        params={"command_name": "base_velocity", "std": math.sqrt(0.25)},
+    )
+    track_ang_vel_z_exp = RewardTermCfg(
+        func=mdp.track_ang_vel_z_exp,
+        weight=0.75,
+        params={"command_name": "base_velocity", "std": math.sqrt(0.25)},
+    )
+
+    # === Arm Swing Coordination - Keep this active ===
+    arm_swing = RewardTermCfg(
+        func=custom_mdp.arm_swing_coordination,
+        weight=0.3,
+        params={"command_name": "base_velocity"},
+    )
+
+    # === SCHEDULED: Jogging Posture Rewards (start at 0) ===
+    forward_lean = RewardTermCfg(
+        func=custom_mdp.forward_lean_reward,
+        weight=0.0,  # SCHEDULED: 0 -> 0.2
+        params={
+            "command_name": "base_velocity",
+            "target_lean_per_speed": 0.04,
+            "max_lean": 0.15,
+        },
+    )
+    elbow_bend = RewardTermCfg(
+        func=custom_mdp.elbow_bend_while_moving,
+        weight=0.0,  # SCHEDULED: 0 -> 0.15
+        params={
+            "command_name": "base_velocity",
+            "target_bend": 0.8,
+        },
+    )
+
+    # === SCHEDULED: Arm Posture Rewards (start at 0) ===
+    arm_close_to_body = RewardTermCfg(
+        func=custom_mdp.arm_close_to_body,
+        weight=0.0,  # SCHEDULED: 0 -> 0.25
+        params={"command_name": "base_velocity"},
+    )
+    arm_lateral_penalty = RewardTermCfg(
+        func=custom_mdp.arm_lateral_penalty,
+        weight=0.0,  # SCHEDULED: 0 -> -0.5
+        params={
+            "command_name": "base_velocity",
+            "max_lateral": 0.3,
+        },
+    )
+
+    # === SCHEDULED: Default Pose Penalty (start low) ===
+    joint_default = RewardTermCfg(
+        func=custom_mdp.joint_default_position,
+        weight=-0.02,  # SCHEDULED: -0.02 -> -0.08
+        params={"asset_cfg": SceneEntityCfg("robot")},
+    )
+
+    # === Stability Penalties (Relaxed for jogging) - Active from start ===
+    lin_vel_z_l2 = RewardTermCfg(
+        func=mdp.lin_vel_z_l2,
+        weight=-1.5,
+    )
+    ang_vel_xy_l2 = RewardTermCfg(
+        func=mdp.ang_vel_xy_l2,
+        weight=-0.03,
+    )
+    flat_orientation_l2 = RewardTermCfg(
+        func=mdp.flat_orientation_l2,
+        weight=-0.2,
+    )
+
+    # === Gait Quality - Active from start ===
+    feet_air_time = RewardTermCfg(
+        func=mdp.feet_air_time,
+        weight=0.15,
+        params={
+            "sensor_cfg": SceneEntityCfg("contact_forces", body_names=".*_leg_toe_roll"),
+            "command_name": "base_velocity",
+            "threshold": 0.5,
+        },
+    )
+
+    # === Regularization Penalties - Active from start ===
+    action_rate_l2 = RewardTermCfg(
+        func=mdp.action_rate_l2,
+        weight=-0.01,
+    )
+    joint_acc_l2 = RewardTermCfg(
+        func=mdp.joint_acc_l2,
+        weight=-2.5e-7,
+    )
+    joint_torques_l2 = RewardTermCfg(
+        func=mdp.joint_torques_l2,
+        weight=-1e-6,
+    )
+
+    # === Safety Penalties - Active from start ===
     undesired_contacts = RewardTermCfg(
         func=mdp.undesired_contacts,
         weight=-1.0,
@@ -791,47 +1172,197 @@ class DigitMinimalEnvCfg(DigitFlatEnvCfg):
         self.episode_length_s = 10.0
 
 
+# =============================================================================
+# CURRICULUM PHASE ENVIRONMENT CONFIGURATIONS
+# =============================================================================
+# Use different --task to switch between phases:
+#   Phase 1: Digit-Walking-v0      (0-2 m/s)
+#   Phase 2: Digit-Jogging-v0      (0-5 m/s)
+#   Phase 3: Digit-Running-v0      (0-8 m/s)
+#   Phase 4: Digit-FastRunning-v0  (0-10 m/s)
+#   Phase 5: Digit-Sprint-v0       (0-13.5 m/s / 30 mph)
+#
+# Resume from checkpoint when progressing: --checkpoint <path_to_model.pt>
+
+
 @configclass
-class DigitRunningEnvCfg(DigitFlatEnvCfg):
-    """Environment configuration for high-speed running (target: 30 mph / 13.4 m/s).
+class DigitWalkingEnvCfg(DigitFlatEnvCfg):
+    """Phase 1: Walking (0-2 m/s) - Learn balance and basic locomotion.
 
-    Features natural arm swing coordination:
+    Start here for initial training. Features:
     - Full body control (50 DOF including arms)
-    - Arm swing reward encourages human-like opposite arm/leg movement
-    - Joint default position penalty prevents extreme arm poses
-
-    Uses curriculum training - manually update lin_vel_x after each phase:
-    Phase 1: (0.0, 2.0)   Walking
-    Phase 2: (0.0, 5.0)   Jogging
-    Phase 3: (0.0, 8.0)   Fast running
-    Phase 4: (0.0, 10.0)  Sprint warmup
-    Phase 5: (0.0, 13.5)  30 mph sprint
-
-    Configuration:
-    - 16384 envs for faster training
-    - Large network [1024, 512, 256] for complex dynamics
-    - Full body control with arm swing coordination reward
+    - Arm swing coordination reward
+    - Conservative velocity range for learning balance
     """
 
-    # 16384 envs for faster training
     scene: DigitSceneCfg = DigitSceneCfg(num_envs=16384, env_spacing=2.5)
-
-    # High-speed velocity commands
-    commands: CommandsRunningCfg = CommandsRunningCfg()
-
-    # Full body control (50 DOF) - needed for natural arm swing
-    # Arm swing coordination is encouraged via rewards
+    commands: CommandsWalkingCfg = CommandsWalkingCfg()
     actions: ActionsCfg = ActionsCfg()
-
-    # Running-optimized rewards with arm swing coordination
     rewards: RewardsRunningCfg = RewardsRunningCfg()
-
-    # Running-optimized terminations (higher tilt tolerance)
     terminations: TerminationsRunningCfg = TerminationsRunningCfg()
 
     def __post_init__(self):
-        """Post-initialization configuration."""
         super().__post_init__()
+        self.episode_length_s = 15.0
 
-        # Shorter episodes for running experiments
+
+@configclass
+class DigitJoggingWarmupEnvCfg(DigitFlatEnvCfg):
+    """Phase 1.5: Jogging Warmup (0-2 m/s) - Learn jogging posture at walking speed.
+
+    Train from scratch to learn jogging rewards (forward lean, elbow bend)
+    at conservative walking speeds. Features:
+    - Walking velocity range (0-2 m/s) for stability
+    - Forward lean reward (lean proportional to speed)
+    - Elbow bend reward (bent arms like human jogging)
+    - Relaxed orientation penalty (allows natural body movement)
+
+    Use this checkpoint to transfer to full jogging (0-5 m/s).
+    """
+
+    scene: DigitSceneCfg = DigitSceneCfg(num_envs=16384, env_spacing=2.5)
+    commands: CommandsWalkingCfg = CommandsWalkingCfg()  # Walking speed (0-2 m/s)
+    actions: ActionsCfg = ActionsCfg()
+    rewards: RewardsJoggingCfg = RewardsJoggingCfg()  # Jogging posture rewards
+    terminations: TerminationsRunningCfg = TerminationsRunningCfg()
+
+    def __post_init__(self):
+        super().__post_init__()
+        self.episode_length_s = 15.0
+
+
+@configclass
+class DigitJoggingIntroEnvCfg(DigitFlatEnvCfg):
+    """Phase 1.75: Jogging Intro (0-3 m/s) - Bridge to faster jogging.
+
+    Resume from JoggingWarmup checkpoint. Features:
+    - Intermediate velocity (0-3 m/s) to bridge 0-2 and 0-5
+    - Forward lean + elbow bend rewards
+    - Relaxed orientation penalty
+
+    Use this checkpoint to transfer to full jogging (0-5 m/s).
+    """
+
+    scene: DigitSceneCfg = DigitSceneCfg(num_envs=16384, env_spacing=2.5)
+    commands: CommandsJoggingIntroCfg = CommandsJoggingIntroCfg()  # 0-3 m/s
+    actions: ActionsCfg = ActionsCfg()
+    rewards: RewardsJoggingCfg = RewardsJoggingCfg()
+    terminations: TerminationsRunningCfg = TerminationsRunningCfg()
+
+    def __post_init__(self):
+        super().__post_init__()
+        self.episode_length_s = 15.0
+
+
+@configclass
+class DigitJoggingIntroScheduledEnvCfg(DigitFlatEnvCfg):
+    """Phase 1.75: Jogging Intro with SCHEDULED rewards.
+
+    Use this with --reward_schedule jogging to gradually introduce
+    arm posture rewards. This prevents catastrophic forgetting when
+    resuming from a walking/jogging checkpoint.
+
+    Training command:
+        .\\isaaclab.bat -p scripts\\train.py --task Digit-JoggingIntroScheduled-v0 \\
+            --checkpoint <checkpoint.pt> --reward_schedule jogging --headless
+
+    The scheduler will:
+    1. First 200 iterations: locomotion only (arm rewards = 0)
+    2. Iterations 200-500: gradually introduce arm posture rewards
+    3. After iteration 500: full arm posture rewards active
+    """
+
+    scene: DigitSceneCfg = DigitSceneCfg(num_envs=16384, env_spacing=2.5)
+    commands: CommandsJoggingIntroCfg = CommandsJoggingIntroCfg()  # 0-3 m/s
+    actions: ActionsCfg = ActionsCfg()
+    rewards: RewardsJoggingScheduledCfg = RewardsJoggingScheduledCfg()  # Scheduled!
+    terminations: TerminationsRunningCfg = TerminationsRunningCfg()
+
+    def __post_init__(self):
+        super().__post_init__()
+        self.episode_length_s = 15.0
+
+
+@configclass
+class DigitJoggingEnvCfg(DigitFlatEnvCfg):
+    """Phase 2: Jogging (0-5 m/s) - Transition to running gait.
+
+    Resume from JoggingIntro checkpoint. Features:
+    - Higher velocity commands (0-5 m/s)
+    - Forward lean reward (lean proportional to speed)
+    - Elbow bend reward (bent arms like human jogging)
+    - Relaxed orientation penalty (allows natural body movement)
+    """
+
+    scene: DigitSceneCfg = DigitSceneCfg(num_envs=16384, env_spacing=2.5)
+    commands: CommandsJoggingCfg = CommandsJoggingCfg()
+    actions: ActionsCfg = ActionsCfg()
+    rewards: RewardsJoggingCfg = RewardsJoggingCfg()
+    terminations: TerminationsRunningCfg = TerminationsRunningCfg()
+
+    def __post_init__(self):
+        super().__post_init__()
+        self.episode_length_s = 15.0
+
+
+@configclass
+class DigitRunningEnvCfg(DigitFlatEnvCfg):
+    """Phase 3: Running (0-8 m/s) - Fast running gait.
+
+    Resume from Phase 2 checkpoint. Features:
+    - Fast running velocities (0-8 m/s)
+    - Forward lean + elbow bend for natural posture
+    - Full body control with arm swing
+    """
+
+    scene: DigitSceneCfg = DigitSceneCfg(num_envs=16384, env_spacing=2.5)
+    commands: CommandsRunningCfg = CommandsRunningCfg()
+    actions: ActionsCfg = ActionsCfg()
+    rewards: RewardsJoggingCfg = RewardsJoggingCfg()  # Same posture rewards
+    terminations: TerminationsRunningCfg = TerminationsRunningCfg()
+
+    def __post_init__(self):
+        super().__post_init__()
+        self.episode_length_s = 15.0
+
+
+@configclass
+class DigitFastRunningEnvCfg(DigitFlatEnvCfg):
+    """Phase 4: Fast Running (0-10 m/s) - Sprint warmup.
+
+    Resume from Phase 3 checkpoint. Features:
+    - Near-sprint velocities (0-10 m/s)
+    - Forward lean + elbow bend for natural posture
+    - Prepares policy for full sprint
+    """
+
+    scene: DigitSceneCfg = DigitSceneCfg(num_envs=16384, env_spacing=2.5)
+    commands: CommandsFastRunningCfg = CommandsFastRunningCfg()
+    actions: ActionsCfg = ActionsCfg()
+    rewards: RewardsJoggingCfg = RewardsJoggingCfg()  # Same posture rewards
+    terminations: TerminationsRunningCfg = TerminationsRunningCfg()
+
+    def __post_init__(self):
+        super().__post_init__()
+        self.episode_length_s = 15.0
+
+
+@configclass
+class DigitSprintEnvCfg(DigitFlatEnvCfg):
+    """Phase 5: Sprint (0-13.5 m/s / 30 mph) - Full speed sprint.
+
+    Resume from Phase 4 checkpoint. Features:
+    - Maximum velocity (30 mph / 13.5 m/s)
+    - Forward lean + elbow bend for natural posture
+    - Full body control with optimized arm swing
+    """
+
+    scene: DigitSceneCfg = DigitSceneCfg(num_envs=16384, env_spacing=2.5)
+    commands: CommandsSprintCfg = CommandsSprintCfg()
+    actions: ActionsCfg = ActionsCfg()
+    rewards: RewardsJoggingCfg = RewardsJoggingCfg()  # Same posture rewards
+    terminations: TerminationsRunningCfg = TerminationsRunningCfg()
+
+    def __post_init__(self):
+        super().__post_init__()
         self.episode_length_s = 15.0

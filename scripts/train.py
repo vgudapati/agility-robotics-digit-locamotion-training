@@ -124,6 +124,27 @@ def parse_args():
         help="Name of the experiment (default: from config)",
     )
 
+    # Reward scheduling
+    parser.add_argument(
+        "--reward_schedule",
+        type=str,
+        default=None,
+        choices=["jogging", "conservative", None],
+        help="Use reward scheduling to gradually introduce arm posture rewards",
+    )
+    parser.add_argument(
+        "--schedule_warmup",
+        type=int,
+        default=200,
+        help="Iterations before starting to introduce scheduled rewards",
+    )
+    parser.add_argument(
+        "--schedule_duration",
+        type=int,
+        default=300,
+        help="Iterations over which to ramp up scheduled rewards",
+    )
+
     # Add Isaac Sim launcher arguments
     AppLauncher.add_app_launcher_args(parser)
 
@@ -149,6 +170,106 @@ from isaaclab_tasks.utils.parse_cfg import parse_env_cfg, load_cfg_from_registry
 
 # Import to register environments
 import digit_locomotion  # noqa: F401
+
+# Import reward scheduler
+from digit_locomotion.tasks.locomotion.reward_scheduler import (
+    RewardScheduler,
+    create_jogging_scheduler,
+    create_conservative_scheduler,
+)
+
+
+class ScheduledOnPolicyRunner:
+    """Wrapper around OnPolicyRunner that supports reward scheduling.
+
+    This class wraps the standard RSL-RL OnPolicyRunner and adds support
+    for dynamically adjusting reward weights during training based on a
+    schedule. This allows locomotion to stabilize before introducing
+    arm posture constraints.
+    """
+
+    def __init__(
+        self,
+        env,
+        train_cfg: dict,
+        log_dir: str,
+        device: str,
+        scheduler: RewardScheduler | None = None,
+    ):
+        from rsl_rl.runners import OnPolicyRunner
+
+        self.base_runner = OnPolicyRunner(
+            env=env,
+            train_cfg=train_cfg,
+            log_dir=log_dir,
+            device=device,
+        )
+        self.scheduler = scheduler
+        self.env = env  # Keep reference for scheduling
+
+    def load(self, path: str):
+        """Load checkpoint."""
+        self.base_runner.load(path)
+
+    def save(self, path: str):
+        """Save checkpoint."""
+        self.base_runner.save(path)
+
+    def learn(self, num_learning_iterations: int, init_at_random_ep_len: bool = True):
+        """Run training with reward scheduling.
+
+        This method runs the training loop with periodic reward weight updates
+        based on the configured schedule.
+        """
+        if self.scheduler is None:
+            # No scheduling - use standard training
+            self.base_runner.learn(
+                num_learning_iterations=num_learning_iterations,
+                init_at_random_ep_len=init_at_random_ep_len,
+            )
+            return
+
+        # Training with reward scheduling
+        # We'll run training in chunks and update rewards between chunks
+        print("\n" + "=" * 60)
+        print("REWARD SCHEDULING ENABLED")
+        print("=" * 60)
+        print("Scheduled rewards will be gradually introduced:")
+        for name, schedule in self.scheduler.schedules.items():
+            print(f"  {name}: {schedule.start_weight:.3f} -> {schedule.end_weight:.3f}")
+            print(f"    (iterations {schedule.start_iteration} to {schedule.end_iteration})")
+        print("=" * 60 + "\n")
+
+        # Get the unwrapped environment for reward updates
+        base_env = self.env.unwrapped
+
+        # Apply initial schedule (iteration 0)
+        self.scheduler.update(base_env, 0)
+
+        # Use the base runner's learn method but with a hook
+        # We'll patch the alg's update method to include scheduling
+        original_update = self.base_runner.alg.update
+
+        def update_with_scheduling():
+            """Wrapper that applies reward scheduling after each update."""
+            result = original_update()
+            # Get current iteration from runner
+            current_iter = self.base_runner.current_learning_iteration
+            self.scheduler.update(base_env, current_iter)
+            return result
+
+        # Patch the update method
+        self.base_runner.alg.update = update_with_scheduling
+
+        try:
+            # Run training
+            self.base_runner.learn(
+                num_learning_iterations=num_learning_iterations,
+                init_at_random_ep_len=init_at_random_ep_len,
+            )
+        finally:
+            # Restore original method
+            self.base_runner.alg.update = original_update
 
 
 class TeeLogger:
@@ -283,17 +404,41 @@ def main():
     sys.stdout = tee_logger
     print(f"Logging training output to: {log_file}")
 
-    # Import RSL-RL runner
-    from rsl_rl.runners import OnPolicyRunner
+    # Create reward scheduler if requested
+    scheduler = None
+    if args.reward_schedule:
+        if args.reward_schedule == "jogging":
+            scheduler = create_jogging_scheduler(
+                locomotion_warmup=args.schedule_warmup,
+                arm_transition_duration=args.schedule_duration,
+            )
+        elif args.reward_schedule == "conservative":
+            scheduler = create_conservative_scheduler(
+                locomotion_warmup=args.schedule_warmup,
+                arm_transition_duration=args.schedule_duration,
+            )
+        print(f"Reward scheduling: {args.reward_schedule}")
+        print(f"  Warmup iterations: {args.schedule_warmup}")
+        print(f"  Transition duration: {args.schedule_duration}")
 
-    # Create the runner
-    # Note: OnPolicyRunner expects a dict, not a dataclass
-    runner = OnPolicyRunner(
-        env=env,
-        train_cfg=agent_cfg.to_dict(),
-        log_dir=log_dir,
-        device=env.device,
-    )
+    # Create the runner (with or without scheduling)
+    if scheduler is not None:
+        runner = ScheduledOnPolicyRunner(
+            env=env,
+            train_cfg=agent_cfg.to_dict(),
+            log_dir=log_dir,
+            device=env.device,
+            scheduler=scheduler,
+        )
+    else:
+        # Import and use standard RSL-RL runner
+        from rsl_rl.runners import OnPolicyRunner
+        runner = OnPolicyRunner(
+            env=env,
+            train_cfg=agent_cfg.to_dict(),
+            log_dir=log_dir,
+            device=env.device,
+        )
 
     # Load checkpoint if resuming
     if checkpoint_path:

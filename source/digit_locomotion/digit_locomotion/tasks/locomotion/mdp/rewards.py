@@ -427,6 +427,9 @@ def stand_still_penalty(
 # ARM SWING COORDINATION
 # =============================================================================
 
+# Global flag to track if we've printed joint names debug info
+_arm_swing_debug_printed = False
+
 def arm_swing_coordination(
     env: ManagerBasedRLEnv,
     command_name: str,
@@ -440,12 +443,13 @@ def arm_swing_coordination(
     This creates counter-rotation that helps balance and is more energy efficient.
 
     The reward is computed by checking if:
-    - left_hip_pitch velocity * right_shoulder_pitch velocity > 0 (same direction)
-    - right_hip_pitch velocity * left_shoulder_pitch velocity > 0 (same direction)
+    - left_hip_pitch velocity * right_arm_pitch velocity > 0 (same direction)
+    - right_hip_pitch velocity * left_arm_pitch velocity > 0 (same direction)
 
-    Joint names for Digit V4:
-    - Leg pitch: left_hip_pitch, right_hip_pitch
-    - Arm pitch: left_shoulder_pitch, right_shoulder_pitch
+    Joint names for Digit V4 (Isaac Lab convention):
+    - Leg pitch: left_leg_hip_pitch, right_leg_hip_pitch
+    - Arm shoulder pitch: left_arm_shoulder_pitch, right_arm_shoulder_pitch
+      (NOT wrist_pitch - we want the shoulder joint for arm swing)
 
     Args:
         env: The environment instance.
@@ -454,46 +458,71 @@ def arm_swing_coordination(
     Returns:
         Reward for coordinated arm swing (positive when properly coordinated).
     """
+    global _arm_swing_debug_printed
     robot = env.scene["robot"]
 
     # Get joint velocities
     joint_vel = robot.data.joint_vel
     joint_names = robot.data.joint_names
 
-    # Find joint indices for hip and shoulder pitch joints
+    # Debug: Print joint names once at startup
+    if not _arm_swing_debug_printed:
+        print(f"[arm_swing DEBUG] Total joints: {len(joint_names)}")
+        print(f"[arm_swing DEBUG] Joint names: {list(joint_names)}")
+        _arm_swing_debug_printed = True
+
+    # Find joint indices for hip pitch and arm pitch joints
     # These control the forward/backward swing motion
+    # Digit V4 naming: .*_leg_hip_pitch, .*_arm_pitch
     left_hip_pitch_idx = None
     right_hip_pitch_idx = None
-    left_shoulder_pitch_idx = None
-    right_shoulder_pitch_idx = None
+    left_arm_pitch_idx = None
+    right_arm_pitch_idx = None
 
     for i, name in enumerate(joint_names):
-        if "left_hip_pitch" in name:
+        name_lower = name.lower()
+        # Match hip pitch joints (leg forward/backward)
+        # Patterns: left_hip_pitch, left_leg_hip_pitch, etc.
+        if "left" in name_lower and "hip" in name_lower and "pitch" in name_lower:
             left_hip_pitch_idx = i
-        elif "right_hip_pitch" in name:
+        elif "right" in name_lower and "hip" in name_lower and "pitch" in name_lower:
             right_hip_pitch_idx = i
-        elif "left_shoulder_pitch" in name:
-            left_shoulder_pitch_idx = i
-        elif "right_shoulder_pitch" in name:
-            right_shoulder_pitch_idx = i
+        # Match arm SHOULDER pitch joints (arm forward/backward swing)
+        # Must match "shoulder" specifically to avoid matching wrist_pitch
+        # Digit V4 naming: left_arm_shoulder_pitch, right_arm_shoulder_pitch
+        elif "left" in name_lower and "shoulder" in name_lower and "pitch" in name_lower:
+            left_arm_pitch_idx = i
+        elif "right" in name_lower and "shoulder" in name_lower and "pitch" in name_lower:
+            right_arm_pitch_idx = i
 
     # If joints not found, return zero reward
     if any(idx is None for idx in [left_hip_pitch_idx, right_hip_pitch_idx,
-                                    left_shoulder_pitch_idx, right_shoulder_pitch_idx]):
+                                    left_arm_pitch_idx, right_arm_pitch_idx]):
+        # Debug: print which joints were not found
+        print(f"[arm_swing DEBUG] Joint matching FAILED!")
+        print(f"[arm_swing DEBUG] Found: hip_l={left_hip_pitch_idx}, hip_r={right_hip_pitch_idx}, "
+              f"arm_l={left_arm_pitch_idx}, arm_r={right_arm_pitch_idx}")
         return torch.zeros(env.num_envs, device=env.device)
+    else:
+        # Debug: print success message once
+        if not hasattr(arm_swing_coordination, '_success_printed'):
+            print(f"[arm_swing DEBUG] Joint matching SUCCESS!")
+            print(f"[arm_swing DEBUG] Indices: hip_l={left_hip_pitch_idx}, hip_r={right_hip_pitch_idx}, "
+                  f"arm_l={left_arm_pitch_idx}, arm_r={right_arm_pitch_idx}")
+            arm_swing_coordination._success_printed = True
 
     # Get velocities for the relevant joints
     left_hip_vel = joint_vel[:, left_hip_pitch_idx]
     right_hip_vel = joint_vel[:, right_hip_pitch_idx]
-    left_shoulder_vel = joint_vel[:, left_shoulder_pitch_idx]
-    right_shoulder_vel = joint_vel[:, right_shoulder_pitch_idx]
+    left_arm_vel = joint_vel[:, left_arm_pitch_idx]
+    right_arm_vel = joint_vel[:, right_arm_pitch_idx]
 
     # Compute coordination reward:
-    # - Left hip and right shoulder should move in SAME direction
-    # - Right hip and left shoulder should move in SAME direction
+    # - Left hip and right arm should move in SAME direction
+    # - Right hip and left arm should move in SAME direction
     # Using product of velocities: positive when same direction, negative when opposite
-    coordination_left = left_hip_vel * right_shoulder_vel  # Should be positive
-    coordination_right = right_hip_vel * left_shoulder_vel  # Should be positive
+    coordination_left = left_hip_vel * right_arm_vel  # Should be positive
+    coordination_right = right_hip_vel * left_arm_vel  # Should be positive
 
     # Reward is sum of coordination scores (positive = good coordination)
     # Use tanh to bound the reward and provide smooth gradients
@@ -534,3 +563,203 @@ def joint_default_position(
     deviation = torch.sum(torch.square(joint_pos - default_joint_pos), dim=1)
 
     return deviation
+
+
+# =============================================================================
+# JOGGING/RUNNING POSTURE REWARDS
+# =============================================================================
+
+def forward_lean_reward(
+    env: ManagerBasedRLEnv,
+    command_name: str,
+    target_lean_per_speed: float = 0.05,  # radians per m/s
+    max_lean: float = 0.2,  # ~11 degrees max
+) -> torch.Tensor:
+    """Reward slight forward lean proportional to forward speed.
+
+    When jogging/running, humans naturally lean forward. The lean angle
+    increases with speed for aerodynamic efficiency and momentum.
+
+    Uses the projected gravity vector in body frame:
+    - Upright: gravity = [0, 0, -1]
+    - Forward lean: gravity_x becomes positive (gravity points slightly backward in body frame)
+
+    Args:
+        env: The environment instance.
+        command_name: Name of the velocity command.
+        target_lean_per_speed: Target lean angle per m/s of forward velocity.
+        max_lean: Maximum lean angle in radians.
+
+    Returns:
+        Reward for appropriate forward lean (negative error from target).
+    """
+    robot = env.scene["robot"]
+
+    # Get commanded forward velocity
+    cmd_vel = env.command_manager.get_command(command_name)
+    forward_vel = torch.clamp(cmd_vel[:, 0], min=0.0)  # Only positive (forward) velocity
+
+    # Calculate target lean based on speed
+    target_lean = torch.clamp(forward_vel * target_lean_per_speed, max=max_lean)
+
+    # Get actual lean from projected gravity
+    # When leaning forward, gravity_x in body frame becomes positive
+    projected_gravity = robot.data.projected_gravity_b
+    actual_lean = projected_gravity[:, 0]  # Positive = leaning forward
+
+    # Reward for being close to target lean
+    lean_error = torch.abs(actual_lean - target_lean)
+
+    # Only apply when moving forward
+    moving_forward = forward_vel > 0.5  # At least 0.5 m/s forward
+
+    return -lean_error * moving_forward.float()
+
+
+def elbow_bend_while_moving(
+    env: ManagerBasedRLEnv,
+    command_name: str,
+    target_bend: float = 0.8,  # ~45 degrees
+) -> torch.Tensor:
+    """Reward bent elbows during locomotion (like human running).
+
+    Humans bend their elbows when jogging/running for more efficient
+    arm swing and reduced moment of inertia.
+
+    Args:
+        env: The environment instance.
+        command_name: Name of the velocity command.
+        target_bend: Target elbow bend angle in radians (~0.8 = 45 degrees).
+
+    Returns:
+        Negative distance from target bend (to be used with positive weight).
+    """
+    robot = env.scene["robot"]
+    joint_pos = robot.data.joint_pos
+    joint_names = robot.data.joint_names
+
+    # Find elbow joint indices
+    left_elbow_idx = None
+    right_elbow_idx = None
+
+    for i, name in enumerate(joint_names):
+        name_lower = name.lower()
+        if "left" in name_lower and "elbow" in name_lower:
+            left_elbow_idx = i
+        elif "right" in name_lower and "elbow" in name_lower:
+            right_elbow_idx = i
+
+    # If joints not found, return zero
+    if left_elbow_idx is None or right_elbow_idx is None:
+        return torch.zeros(env.num_envs, device=env.device)
+
+    # Get elbow positions
+    left_elbow = joint_pos[:, left_elbow_idx]
+    right_elbow = joint_pos[:, right_elbow_idx]
+
+    # Reward being close to target bend angle
+    bend_error = torch.abs(left_elbow - target_bend) + torch.abs(right_elbow - target_bend)
+
+    # Only when moving
+    cmd_vel = env.command_manager.get_command(command_name)
+    moving = torch.norm(cmd_vel[:, :2], dim=1) > 0.5  # At least 0.5 m/s
+
+    return -bend_error * moving.float()
+
+
+def arm_lateral_penalty(
+    env: ManagerBasedRLEnv,
+    command_name: str,
+    max_lateral: float = 0.3,  # ~17 degrees max lateral extension
+) -> torch.Tensor:
+    """Penalize arms extending laterally (sideways) during locomotion.
+
+    Human arms should swing forward/backward during running, not out to the sides.
+    The shoulder roll joint controls lateral arm movement.
+
+    Args:
+        env: The environment instance.
+        command_name: Name of the velocity command.
+        max_lateral: Maximum allowed lateral extension before penalty (radians).
+
+    Returns:
+        Penalty for lateral arm extension (positive value, use with negative weight).
+    """
+    robot = env.scene["robot"]
+    joint_pos = robot.data.joint_pos
+    joint_names = robot.data.joint_names
+
+    # Find shoulder roll joint indices (controls lateral arm movement)
+    left_shoulder_roll_idx = None
+    right_shoulder_roll_idx = None
+
+    for i, name in enumerate(joint_names):
+        name_lower = name.lower()
+        if "left" in name_lower and "shoulder" in name_lower and "roll" in name_lower:
+            left_shoulder_roll_idx = i
+        elif "right" in name_lower and "shoulder" in name_lower and "roll" in name_lower:
+            right_shoulder_roll_idx = i
+
+    # If joints not found, return zero
+    if left_shoulder_roll_idx is None or right_shoulder_roll_idx is None:
+        return torch.zeros(env.num_envs, device=env.device)
+
+    # Get shoulder roll positions (how far arms are extended sideways)
+    left_roll = joint_pos[:, left_shoulder_roll_idx]
+    right_roll = joint_pos[:, right_shoulder_roll_idx]
+
+    # Penalize lateral extension beyond threshold
+    # Using soft penalty with squared error beyond threshold
+    left_excess = torch.clamp(torch.abs(left_roll) - max_lateral, min=0.0)
+    right_excess = torch.clamp(torch.abs(right_roll) - max_lateral, min=0.0)
+
+    penalty = torch.square(left_excess) + torch.square(right_excess)
+
+    # Only when moving
+    cmd_vel = env.command_manager.get_command(command_name)
+    moving = torch.norm(cmd_vel[:, :2], dim=1) > 0.3
+
+    return penalty * moving.float()
+
+
+def arm_close_to_body(
+    env: ManagerBasedRLEnv,
+    command_name: str,
+) -> torch.Tensor:
+    """Reward keeping arms close to the body during locomotion.
+
+    Proper running form has arms swinging close to the torso,
+    not flailing outward. This rewards minimal shoulder roll angles.
+
+    Args:
+        env: The environment instance.
+        command_name: Name of the velocity command.
+
+    Returns:
+        Negative of arm deviation from body (use with positive weight).
+    """
+    robot = env.scene["robot"]
+    joint_pos = robot.data.joint_pos
+    joint_names = robot.data.joint_names
+
+    # Find shoulder roll and yaw joint indices
+    arm_joint_indices = []
+
+    for i, name in enumerate(joint_names):
+        name_lower = name.lower()
+        # Match shoulder roll and yaw (lateral arm position control)
+        if "shoulder" in name_lower and ("roll" in name_lower or "yaw" in name_lower):
+            arm_joint_indices.append(i)
+
+    # If joints not found, return zero
+    if len(arm_joint_indices) == 0:
+        return torch.zeros(env.num_envs, device=env.device)
+
+    # Sum squared deviation from zero (neutral position)
+    deviation = torch.sum(torch.square(joint_pos[:, arm_joint_indices]), dim=1)
+
+    # Only when moving
+    cmd_vel = env.command_manager.get_command(command_name)
+    moving = torch.norm(cmd_vel[:, :2], dim=1) > 0.3
+
+    return -deviation * moving.float()

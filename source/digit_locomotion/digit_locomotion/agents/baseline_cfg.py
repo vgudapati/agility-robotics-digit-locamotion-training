@@ -1,0 +1,236 @@
+"""RSL-RL configurations for baseline training (Radosavovic et al. 2024).
+
+This module provides configurations for:
+1. Teacher policy (MLP with privileged state) - fast training
+2. Student policy (Transformer with noisy obs) - final deployment
+
+Training pipeline:
+1. Train teacher with DigitBaselineTeacherPPORunnerCfg
+2. Distill teacher to student with DigitBaselineStudentPPORunnerCfg
+"""
+
+from isaaclab.utils import configclass
+from isaaclab_rl.rsl_rl import (
+    RslRlOnPolicyRunnerCfg,
+    RslRlPpoActorCriticCfg,
+    RslRlPpoActorCriticRecurrentCfg,
+    RslRlPpoAlgorithmCfg,
+)
+
+
+@configclass
+class RslRlPpoActorCriticTransformerCfg:
+    """Configuration for transformer-based actor-critic.
+
+    Matches the architecture from Radosavovic et al. (2024):
+    - 4 transformer blocks
+    - 192 embedding dimension
+    - 4 attention heads
+    - 16 timestep context window
+    - ~1.4M parameters
+    """
+
+    class_name: str = "ActorCriticTransformer"
+
+    # Observation normalization
+    actor_obs_normalization: bool = False
+    critic_obs_normalization: bool = False
+
+    # Transformer architecture (paper: 4 blocks, 192 dim, 4 heads)
+    transformer_embed_dim: int = 192
+    transformer_num_heads: int = 4
+    transformer_num_layers: int = 4
+    transformer_mlp_ratio: float = 2.0
+    transformer_dropout: float = 0.0
+
+    # Context length (paper: 16 timesteps)
+    context_length: int = 16
+
+    # Action head (paper: [256, 128])
+    actor_hidden_dims: list[int] = [256, 128]
+    critic_hidden_dims: list[int] = [256, 128]
+    activation: str = "elu"
+
+    # Action noise
+    init_noise_std: float = 1.0
+    noise_std_type: str = "scalar"
+    state_dependent_std: bool = False
+
+
+@configclass
+class DigitBaselineTeacherPPORunnerCfg(RslRlOnPolicyRunnerCfg):
+    """PPO configuration for TEACHER policy.
+
+    Teacher uses MLP with privileged state (no noise) for fast training.
+    Paper uses [512, 512, 256, 128] for teacher state model.
+
+    Training tip: Train teacher first to convergence (~5-10k iterations),
+    then use as supervision for student transformer.
+    """
+
+    seed = 42  # Fixed seed for reproducibility
+    num_steps_per_env = 48
+    max_iterations = 10000
+    save_interval = 50
+    experiment_name = "digit_baseline_teacher"
+    run_name = ""
+    logger = "tensorboard"
+    neptune_project = ""
+    wandb_project = ""
+    resume = False
+    empirical_normalization = False
+
+    # Teacher MLP (privileged state, no noise)
+    # Paper: [512, 512, 256, 128]
+    policy: RslRlPpoActorCriticCfg = RslRlPpoActorCriticCfg(
+        init_noise_std=1.0,
+        actor_hidden_dims=[512, 512, 256, 128],
+        critic_hidden_dims=[512, 512, 256, 128],
+        activation="elu",
+    )
+
+    algorithm: RslRlPpoAlgorithmCfg = RslRlPpoAlgorithmCfg(
+        value_loss_coef=1.0,
+        use_clipped_value_loss=True,
+        clip_param=0.2,
+        entropy_coef=0.01,
+        num_learning_epochs=5,
+        num_mini_batches=8,
+        learning_rate=1.0e-3,
+        schedule="adaptive",
+        desired_kl=0.01,
+        max_grad_norm=1.0,
+        gamma=0.99,
+        lam=0.95,
+    )
+
+
+@configclass
+class DigitBaselineStudentPPORunnerCfg(RslRlOnPolicyRunnerCfg):
+    """PPO configuration for STUDENT transformer policy.
+
+    Student uses transformer with observation-action history.
+    Trained with joint objective: RL + KL divergence from teacher.
+
+    Paper: "λ is gradually annealed to zero over the course of the training
+    process, typically reaching zero at the midpoint of the training horizon."
+    """
+
+    seed = 42  # Fixed seed for reproducibility
+    num_steps_per_env = 48
+    max_iterations = 20000  # Longer training for transformer
+    save_interval = 50
+    experiment_name = "digit_baseline_student"
+    run_name = ""
+    logger = "tensorboard"
+    neptune_project = ""
+    wandb_project = ""
+    resume = False
+    empirical_normalization = False
+
+    # Transformer policy (paper architecture)
+    policy: RslRlPpoActorCriticTransformerCfg = RslRlPpoActorCriticTransformerCfg()
+
+    algorithm: RslRlPpoAlgorithmCfg = RslRlPpoAlgorithmCfg(
+        value_loss_coef=1.0,
+        use_clipped_value_loss=True,
+        clip_param=0.2,
+        entropy_coef=0.01,
+        num_learning_epochs=5,
+        num_mini_batches=8,
+        learning_rate=5.0e-4,  # Lower LR for transformer stability
+        schedule="adaptive",
+        desired_kl=0.01,
+        max_grad_norm=1.0,
+        gamma=0.99,
+        lam=0.95,
+    )
+
+
+@configclass
+class DigitBaselineMlpPPORunnerCfg(RslRlOnPolicyRunnerCfg):
+    """Alternative: MLP baseline for comparison.
+
+    Same rewards as baseline but with standard MLP policy.
+    Use this to measure the benefit of transformer architecture.
+    """
+
+    seed = 42  # Fixed seed for reproducibility
+    num_steps_per_env = 48
+    max_iterations = 15000
+    save_interval = 50
+    experiment_name = "digit_baseline_mlp"
+    run_name = ""
+    logger = "tensorboard"
+    neptune_project = ""
+    wandb_project = ""
+    resume = False
+    empirical_normalization = False
+
+    policy: RslRlPpoActorCriticCfg = RslRlPpoActorCriticCfg(
+        init_noise_std=1.0,
+        actor_hidden_dims=[1024, 512, 256],
+        critic_hidden_dims=[1024, 512, 256],
+        activation="elu",
+    )
+
+    algorithm: RslRlPpoAlgorithmCfg = RslRlPpoAlgorithmCfg(
+        value_loss_coef=1.0,
+        use_clipped_value_loss=True,
+        clip_param=0.2,
+        entropy_coef=0.01,
+        num_learning_epochs=5,
+        num_mini_batches=8,
+        learning_rate=1.0e-3,
+        schedule="adaptive",
+        desired_kl=0.01,
+        max_grad_norm=1.0,
+        gamma=0.99,
+        lam=0.95,
+    )
+
+
+@configclass
+class DigitBaselineRecurrentPPORunnerCfg(RslRlOnPolicyRunnerCfg):
+    """Alternative: LSTM baseline for comparison.
+
+    Uses recurrent policy (LSTM) instead of transformer.
+    Paper shows transformer outperforms LSTM by significant margin.
+    """
+
+    seed = 42  # Fixed seed for reproducibility
+    num_steps_per_env = 48
+    max_iterations = 15000
+    save_interval = 50
+    experiment_name = "digit_baseline_lstm"
+    run_name = ""
+    logger = "tensorboard"
+    neptune_project = ""
+    wandb_project = ""
+    resume = False
+    empirical_normalization = False
+
+    policy: RslRlPpoActorCriticRecurrentCfg = RslRlPpoActorCriticRecurrentCfg(
+        init_noise_std=1.0,
+        actor_hidden_dims=[256, 256],
+        critic_hidden_dims=[256, 256],
+        activation="elu",
+        rnn_type="lstm",
+        rnn_hidden_dim=256,
+        rnn_num_layers=1,
+    )
+
+    algorithm: RslRlPpoAlgorithmCfg = RslRlPpoAlgorithmCfg(
+        value_loss_coef=1.0,
+        use_clipped_value_loss=True,
+        clip_param=0.2,
+        entropy_coef=0.01,
+        num_learning_epochs=5,
+        num_mini_batches=8,
+        learning_rate=1.0e-3,
+        schedule="adaptive",
+        desired_kl=0.01,
+        max_grad_norm=1.0,
+        gamma=0.99,
+        lam=0.95,
+    )
