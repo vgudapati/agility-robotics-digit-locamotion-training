@@ -763,3 +763,214 @@ def arm_close_to_body(
     moving = torch.norm(cmd_vel[:, :2], dim=1) > 0.3
 
     return -deviation * moving.float()
+
+
+def arm_leg_phase_coordination(
+    env: ManagerBasedRLEnv,
+    command_name: str,
+) -> torch.Tensor:
+    """Reward arm swing that opposes leg motion (position-based).
+
+    Natural human locomotion has arms swinging in opposition to legs:
+    - When left leg is forward (positive hip pitch), right arm should be forward
+    - When right leg is forward, left arm should be forward
+
+    This uses POSITION correlation rather than velocity to ensure arms
+    reach equal amplitude forward and backward.
+
+    The reward is computed as:
+        correlation = left_hip_pos * right_shoulder_pitch + right_hip_pos * left_shoulder_pitch
+
+    Higher correlation = better opposition (arms swing opposite to legs).
+
+    Args:
+        env: The environment instance.
+        command_name: Name of the velocity command.
+
+    Returns:
+        Correlation reward (positive when arms oppose legs).
+    """
+    robot = env.scene["robot"]
+    joint_pos = robot.data.joint_pos
+    joint_names = robot.data.joint_names
+
+    # Find joint indices
+    left_hip_pitch_idx = None
+    right_hip_pitch_idx = None
+    left_shoulder_pitch_idx = None
+    right_shoulder_pitch_idx = None
+
+    for i, name in enumerate(joint_names):
+        name_lower = name.lower()
+        if "left" in name_lower and "hip" in name_lower and "pitch" in name_lower:
+            left_hip_pitch_idx = i
+        elif "right" in name_lower and "hip" in name_lower and "pitch" in name_lower:
+            right_hip_pitch_idx = i
+        elif "left" in name_lower and "shoulder" in name_lower and "pitch" in name_lower:
+            left_shoulder_pitch_idx = i
+        elif "right" in name_lower and "shoulder" in name_lower and "pitch" in name_lower:
+            right_shoulder_pitch_idx = i
+
+    # If joints not found, return zero
+    if any(idx is None for idx in [left_hip_pitch_idx, right_hip_pitch_idx,
+                                    left_shoulder_pitch_idx, right_shoulder_pitch_idx]):
+        return torch.zeros(env.num_envs, device=env.device)
+
+    # Get joint positions
+    left_hip_pos = joint_pos[:, left_hip_pitch_idx]
+    right_hip_pos = joint_pos[:, right_hip_pitch_idx]
+    left_arm_pos = joint_pos[:, left_shoulder_pitch_idx]
+    right_arm_pos = joint_pos[:, right_shoulder_pitch_idx]
+
+    # Compute phase coordination:
+    # Left hip forward (positive) should correlate with right arm forward
+    # Right hip forward should correlate with left arm forward
+    # Using product: positive when in phase, negative when out of phase
+    coordination = left_hip_pos * right_arm_pos + right_hip_pos * left_arm_pos
+
+    # Normalize with tanh for bounded gradients
+    reward = torch.tanh(coordination)
+
+    # Only when moving
+    cmd_vel = env.command_manager.get_command(command_name)
+    moving = torch.norm(cmd_vel[:, :2], dim=1) > 0.3
+
+    return reward * moving.float()
+
+
+def arm_swing_center_bias_penalty(
+    env: ManagerBasedRLEnv,
+    command_name: str,
+    neutral_pitch: float = 0.0,
+) -> torch.Tensor:
+    """Penalize arm swing bias (arms consistently forward or backward).
+
+    During natural running, arm swing should be symmetric around the body -
+    arms should reach equally forward and backward. If the MEAN shoulder pitch
+    is consistently non-zero, it indicates a bias (e.g., arms always back).
+
+    This penalty uses the MEAN of left and right shoulder pitch to detect
+    systematic bias. Individual arm positions can vary, but the average
+    should stay near neutral.
+
+    Penalty = (mean_shoulder_pitch - neutral_pitch)^2
+
+    Args:
+        env: The environment instance.
+        command_name: Name of the velocity command.
+        neutral_pitch: Target neutral shoulder pitch angle (default 0.0).
+
+    Returns:
+        Squared deviation of mean arm position from neutral (use with negative weight).
+    """
+    robot = env.scene["robot"]
+    joint_pos = robot.data.joint_pos
+    joint_names = robot.data.joint_names
+
+    # Find shoulder pitch indices
+    left_shoulder_pitch_idx = None
+    right_shoulder_pitch_idx = None
+
+    for i, name in enumerate(joint_names):
+        name_lower = name.lower()
+        if "left" in name_lower and "shoulder" in name_lower and "pitch" in name_lower:
+            left_shoulder_pitch_idx = i
+        elif "right" in name_lower and "shoulder" in name_lower and "pitch" in name_lower:
+            right_shoulder_pitch_idx = i
+
+    # If joints not found, return zero
+    if left_shoulder_pitch_idx is None or right_shoulder_pitch_idx is None:
+        return torch.zeros(env.num_envs, device=env.device)
+
+    # Get shoulder pitch positions
+    left_arm_pitch = joint_pos[:, left_shoulder_pitch_idx]
+    right_arm_pitch = joint_pos[:, right_shoulder_pitch_idx]
+
+    # Compute mean shoulder pitch (bias indicator)
+    mean_pitch = (left_arm_pitch + right_arm_pitch) / 2.0
+
+    # Penalty for deviation from neutral
+    bias_penalty = torch.square(mean_pitch - neutral_pitch)
+
+    # Only when moving
+    cmd_vel = env.command_manager.get_command(command_name)
+    moving = torch.norm(cmd_vel[:, :2], dim=1) > 0.3
+
+    return bias_penalty * moving.float()
+
+
+def excessive_forward_lean_penalty(
+    env: ManagerBasedRLEnv,
+    max_lean: float = 0.1,  # ~6 degrees max forward lean
+) -> torch.Tensor:
+    """Penalize excessive forward body lean.
+
+    While some forward lean is natural during running, excessive lean
+    causes the arms to swing backward to compensate. This penalty keeps
+    the body closer to vertical (90 degrees to ground).
+
+    Uses projected gravity in body frame:
+    - Upright: gravity = [0, 0, -1]
+    - Forward lean: gravity_x becomes positive
+
+    Penalty applies when lean exceeds max_lean threshold.
+
+    Args:
+        env: The environment instance.
+        max_lean: Maximum allowed forward lean before penalty (radians).
+                  Default 0.1 rad ≈ 6 degrees.
+
+    Returns:
+        Squared excess lean (use with negative weight).
+    """
+    robot = env.scene["robot"]
+
+    # Get forward lean from projected gravity
+    # When leaning forward, gravity_x in body frame becomes positive
+    projected_gravity = robot.data.projected_gravity_b
+    forward_lean = projected_gravity[:, 0]  # Positive = leaning forward
+
+    # Only penalize forward lean that exceeds threshold
+    excess_lean = torch.clamp(forward_lean - max_lean, min=0.0)
+
+    return torch.square(excess_lean)
+
+
+def upright_posture_reward(
+    env: ManagerBasedRLEnv,
+    command_name: str,
+) -> torch.Tensor:
+    """Reward maintaining upright posture (body perpendicular to ground).
+
+    Encourages the robot to stay close to 90 degrees relative to ground,
+    regardless of speed. This prevents excessive forward lean that causes
+    unnatural arm swing patterns.
+
+    Uses exponential reward for smooth gradients near target.
+
+    Args:
+        env: The environment instance.
+        command_name: Name of the velocity command.
+
+    Returns:
+        Exponential reward for upright posture (1.0 when perfectly upright).
+    """
+    robot = env.scene["robot"]
+
+    # Get tilt from projected gravity
+    # Perfect upright: gravity = [0, 0, -1], so x and y components = 0
+    projected_gravity = robot.data.projected_gravity_b
+    tilt_xy = projected_gravity[:, :2]
+
+    # Compute squared tilt magnitude
+    tilt_sq = torch.sum(torch.square(tilt_xy), dim=1)
+
+    # Exponential reward: 1.0 when upright, decays with tilt
+    # std=0.1 means ~60% reward at ~6 degrees tilt
+    reward = torch.exp(-tilt_sq / (0.1 ** 2))
+
+    # Only when moving (standing still has its own posture requirements)
+    cmd_vel = env.command_manager.get_command(command_name)
+    moving = torch.norm(cmd_vel[:, :2], dim=1) > 0.3
+
+    return reward * moving.float()

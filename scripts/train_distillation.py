@@ -65,6 +65,22 @@ parser.add_argument("--early-stop-vel-tracking", type=float, default=0.90,
 parser.add_argument("--early-stop-patience", type=int, default=100,
                     help="Number of iterations to sustain all thresholds before stopping (default: 100)")
 
+# Adaptive learning rate scheduler
+parser.add_argument("--adaptive-lr", action="store_true",
+                    help="Enable adaptive LR based on episode length trends")
+parser.add_argument("--lr-min", type=float, default=1e-5,
+                    help="Minimum learning rate (default: 1e-5)")
+parser.add_argument("--lr-max", type=float, default=1e-3,
+                    help="Maximum learning rate (default: 1e-3)")
+parser.add_argument("--lr-decay-factor", type=float, default=0.5,
+                    help="LR decay factor when collapse detected (default: 0.5)")
+parser.add_argument("--lr-grow-factor", type=float, default=1.1,
+                    help="LR growth factor when improving (default: 1.1)")
+parser.add_argument("--collapse-threshold", type=float, default=0.7,
+                    help="Collapse detection: current/peak ratio (default: 0.7 = 70%%)")
+parser.add_argument("--rollback-threshold", type=float, default=0.3,
+                    help="Severe collapse threshold for checkpoint rollback (default: 0.3 = 30%%)")
+
 # Append AppLauncher CLI args
 AppLauncher.add_app_launcher_args(parser)
 args_cli = parser.parse_args()
@@ -292,6 +308,339 @@ class TeeLogger:
         self.log_file.close()
 
 
+class AdaptiveLRScheduler:
+    """Adaptive learning rate scheduler based on episode length trends.
+
+    Monitors training progress and adjusts learning rate:
+    - Reduces LR when episode length drops (collapse detection)
+    - Increases LR when episode length improves (progress detection)
+    - Can rollback to best checkpoint if severe collapse detected
+    """
+
+    def __init__(
+        self,
+        runner,
+        lr_min: float = 1e-5,
+        lr_max: float = 1e-3,
+        lr_decay_factor: float = 0.5,
+        lr_grow_factor: float = 1.1,
+        collapse_threshold: float = 0.7,
+        rollback_threshold: float = 0.3,
+        window_size: int = 50,
+        check_interval: int = 20,
+        log_dir: str = None,
+    ):
+        self.runner = runner
+        self.lr_min = lr_min
+        self.lr_max = lr_max
+        self.lr_decay_factor = lr_decay_factor
+        self.lr_grow_factor = lr_grow_factor
+        self.collapse_threshold = collapse_threshold
+        self.rollback_threshold = rollback_threshold
+        self.window_size = window_size
+        self.check_interval = check_interval
+        self.log_dir = log_dir
+
+        # Tracking state
+        self.ep_length_history = []
+        self.peak_ep_length = 0.0
+        self.best_checkpoint_path = None
+        self.best_ep_length = 0.0
+        self.current_lr = self._get_current_lr()
+        self.lr_reductions = 0
+        self.rollbacks = 0
+
+    def _get_current_lr(self) -> float:
+        """Get current learning rate from optimizer."""
+        for param_group in self.runner.alg.optimizer.param_groups:
+            return param_group['lr']
+        return self.lr_max
+
+    def _set_lr(self, new_lr: float):
+        """Set learning rate in optimizer."""
+        new_lr = max(self.lr_min, min(self.lr_max, new_lr))
+        for param_group in self.runner.alg.optimizer.param_groups:
+            param_group['lr'] = new_lr
+        self.current_lr = new_lr
+        return new_lr
+
+    def _get_rolling_avg(self, n: int = None) -> float:
+        """Get rolling average of episode length."""
+        if not self.ep_length_history:
+            return 0.0
+        n = n or self.window_size
+        recent = self.ep_length_history[-n:]
+        return sum(recent) / len(recent)
+
+    def update(self, ep_length: float, iteration: int):
+        """Update scheduler with new episode length observation."""
+        self.ep_length_history.append(ep_length)
+
+        # Update peak
+        if ep_length > self.peak_ep_length:
+            self.peak_ep_length = ep_length
+
+        # Save checkpoint if this is the best
+        if ep_length > self.best_ep_length and self.log_dir:
+            self.best_ep_length = ep_length
+            self.best_checkpoint_path = os.path.join(
+                self.log_dir, f"model_best_{iteration}.pt"
+            )
+            self.runner.save(self.best_checkpoint_path)
+
+        # Only check periodically to avoid noisy decisions
+        if iteration % self.check_interval != 0 or len(self.ep_length_history) < self.window_size:
+            return None
+
+        # Compute metrics
+        current_avg = self._get_rolling_avg()
+        prev_avg = self._get_rolling_avg(self.window_size * 2)[-self.window_size:] if len(self.ep_length_history) > self.window_size * 2 else current_avg
+
+        # Recompute prev_avg correctly
+        if len(self.ep_length_history) > self.window_size * 2:
+            prev_data = self.ep_length_history[-(self.window_size * 2):-self.window_size]
+            prev_avg = sum(prev_data) / len(prev_data)
+        else:
+            prev_avg = current_avg
+
+        ratio_to_peak = current_avg / max(1.0, self.peak_ep_length)
+
+        action = None
+
+        # Check for severe collapse - consider rollback
+        if ratio_to_peak < self.rollback_threshold and self.best_checkpoint_path:
+            print(f"\n{'!'*60}")
+            print(f"[Adaptive LR] SEVERE COLLAPSE DETECTED at iter {iteration}")
+            print(f"  Current avg: {current_avg:.1f}, Peak: {self.peak_ep_length:.1f} (ratio: {ratio_to_peak:.2f})")
+            print(f"  Rolling back to best checkpoint: {self.best_checkpoint_path}")
+            print(f"  Reducing LR by {self.lr_decay_factor}x")
+            print(f"{'!'*60}\n")
+
+            # Load best checkpoint
+            self.runner.load(self.best_checkpoint_path)
+
+            # Reduce LR significantly
+            new_lr = self._set_lr(self.current_lr * self.lr_decay_factor * self.lr_decay_factor)
+            self.lr_reductions += 2
+            self.rollbacks += 1
+
+            # Reset peak to allow recovery
+            self.peak_ep_length = self.best_ep_length
+            action = "rollback"
+
+        # Check for moderate collapse - reduce LR
+        elif ratio_to_peak < self.collapse_threshold:
+            new_lr = self._set_lr(self.current_lr * self.lr_decay_factor)
+            self.lr_reductions += 1
+            print(f"\n[Adaptive LR] Collapse detected at iter {iteration}")
+            print(f"  Current avg: {current_avg:.1f}, Peak: {self.peak_ep_length:.1f} (ratio: {ratio_to_peak:.2f})")
+            print(f"  Reducing LR: {self.current_lr/self.lr_decay_factor:.2e} -> {new_lr:.2e}")
+            action = "decay"
+
+        # Check for improvement - gradually increase LR
+        elif current_avg > prev_avg * 1.1 and self.current_lr < self.lr_max:
+            new_lr = self._set_lr(self.current_lr * self.lr_grow_factor)
+            print(f"\n[Adaptive LR] Progress detected at iter {iteration}")
+            print(f"  Current avg: {current_avg:.1f} > Prev avg: {prev_avg:.1f}")
+            print(f"  Increasing LR: {self.current_lr/self.lr_grow_factor:.2e} -> {new_lr:.2e}")
+            action = "grow"
+
+        return action
+
+    def get_stats(self) -> dict:
+        """Get scheduler statistics."""
+        return {
+            "current_lr": self.current_lr,
+            "peak_ep_length": self.peak_ep_length,
+            "best_ep_length": self.best_ep_length,
+            "lr_reductions": self.lr_reductions,
+            "rollbacks": self.rollbacks,
+        }
+
+
+def train_with_adaptive_lr(
+    runner,
+    max_iterations: int,
+    args_cli,
+    log_dir: str,
+):
+    """Training with adaptive learning rate using chunked training.
+
+    Runs training in chunks using the standard runner, checking progress
+    after each chunk and adjusting LR accordingly. This avoids RSL-RL
+    API compatibility issues by using the built-in training loop.
+    """
+    import time
+    from collections import deque
+
+    # Chunk size - how many iterations between LR checks
+    chunk_size = 50
+    num_chunks = (max_iterations + chunk_size - 1) // chunk_size
+
+    # LR tracking
+    lr_min = args_cli.lr_min
+    lr_max = args_cli.lr_max
+    lr_decay_factor = args_cli.lr_decay_factor
+    lr_grow_factor = args_cli.lr_grow_factor
+    collapse_threshold = args_cli.collapse_threshold
+    rollback_threshold = args_cli.rollback_threshold
+
+    # Get initial LR
+    current_lr = lr_max
+    for param_group in runner.alg.optimizer.param_groups:
+        current_lr = param_group['lr']
+        break
+
+    # Progress tracking
+    ep_length_history = deque(maxlen=200)
+    peak_ep_length = 0.0
+    best_ep_length = 0.0
+    best_checkpoint_path = None
+    lr_reductions = 0
+    rollbacks = 0
+    total_iterations = 0
+
+    print(f"\n{'='*60}")
+    print("ADAPTIVE LEARNING RATE ENABLED (Chunked Training)")
+    print(f"{'='*60}")
+    print(f"  LR range: [{lr_min:.2e}, {lr_max:.2e}]")
+    print(f"  Decay factor: {lr_decay_factor}x on collapse")
+    print(f"  Grow factor: {lr_grow_factor}x on progress")
+    print(f"  Collapse threshold: {collapse_threshold*100:.0f}% of peak")
+    print(f"  Rollback threshold: {rollback_threshold*100:.0f}% of peak")
+    print(f"  Check interval: {chunk_size} iterations")
+    print(f"{'='*60}\n")
+
+    start_time = time.time()
+
+    for chunk_idx in range(num_chunks):
+        # Calculate cumulative iteration target for this chunk
+        # RSL-RL's learn() uses range(current_learning_iteration, num_learning_iterations)
+        # So we must pass CUMULATIVE targets, not per-chunk counts
+        target_iteration = min((chunk_idx + 1) * chunk_size, max_iterations)
+
+        if target_iteration <= total_iterations:
+            break
+
+        # Run training chunk using standard runner (handles all API details)
+        print(f"\n--- Chunk {chunk_idx + 1}/{num_chunks}: iterations {total_iterations + 1}-{target_iteration} ---")
+        runner.learn(num_learning_iterations=target_iteration, init_at_random_ep_len=(chunk_idx == 0))
+        total_iterations = target_iteration
+
+        # Get episode length from TensorBoard writer (if available) or estimate
+        # For now, we'll read from the runner's logged statistics
+        try:
+            # Try to get from runner's internal storage
+            ep_len = runner.env.episode_length_buf.float().mean().item()
+        except:
+            ep_len = 100.0  # Default if we can't get it
+
+        ep_length_history.append(ep_len)
+
+        # Update peak
+        if ep_len > peak_ep_length:
+            peak_ep_length = ep_len
+
+        # Save best checkpoint
+        if ep_len > best_ep_length:
+            best_ep_length = ep_len
+            best_checkpoint_path = os.path.join(log_dir, f"model_best_{total_iterations}.pt")
+            runner.save(best_checkpoint_path)
+            print(f"[Adaptive LR] New best checkpoint saved: ep_len={ep_len:.1f}")
+
+        # Calculate rolling average
+        if len(ep_length_history) >= 10:
+            current_avg = sum(list(ep_length_history)[-10:]) / 10
+            prev_avg = sum(list(ep_length_history)[-20:-10]) / 10 if len(ep_length_history) >= 20 else current_avg
+        else:
+            current_avg = ep_len
+            prev_avg = ep_len
+
+        ratio_to_peak = current_avg / max(1.0, peak_ep_length)
+
+        # Check for severe collapse - rollback
+        if ratio_to_peak < rollback_threshold and best_checkpoint_path and len(ep_length_history) > 20:
+            print(f"\n{'!'*60}")
+            print(f"[Adaptive LR] SEVERE COLLAPSE DETECTED!")
+            print(f"  Current avg: {current_avg:.1f}, Peak: {peak_ep_length:.1f} (ratio: {ratio_to_peak:.2f})")
+            print(f"  Rolling back to best checkpoint")
+            print(f"{'!'*60}\n")
+
+            runner.load(best_checkpoint_path)
+
+            # Reduce LR significantly
+            new_lr = max(lr_min, current_lr * lr_decay_factor * lr_decay_factor)
+            for param_group in runner.alg.optimizer.param_groups:
+                param_group['lr'] = new_lr
+            current_lr = new_lr
+            lr_reductions += 2
+            rollbacks += 1
+
+            # Reset peak
+            peak_ep_length = best_ep_length
+            print(f"  New LR: {new_lr:.2e}")
+
+        # Check for moderate collapse - reduce LR
+        elif ratio_to_peak < collapse_threshold and len(ep_length_history) > 10:
+            new_lr = max(lr_min, current_lr * lr_decay_factor)
+            for param_group in runner.alg.optimizer.param_groups:
+                param_group['lr'] = new_lr
+            print(f"\n[Adaptive LR] Collapse detected (ratio: {ratio_to_peak:.2f})")
+            print(f"  Reducing LR: {current_lr:.2e} -> {new_lr:.2e}")
+            current_lr = new_lr
+            lr_reductions += 1
+
+        # Check for improvement - increase LR
+        elif current_avg > prev_avg * 1.1 and current_lr < lr_max and len(ep_length_history) > 20:
+            new_lr = min(lr_max, current_lr * lr_grow_factor)
+            for param_group in runner.alg.optimizer.param_groups:
+                param_group['lr'] = new_lr
+            print(f"\n[Adaptive LR] Progress detected!")
+            print(f"  Increasing LR: {current_lr:.2e} -> {new_lr:.2e}")
+            current_lr = new_lr
+
+        # Status update
+        print(f"[Adaptive LR] Status: LR={current_lr:.2e}, EP len avg={current_avg:.1f}, Peak={peak_ep_length:.1f}")
+
+    elapsed = time.time() - start_time
+
+    # Create a stats object to return
+    class SchedulerStats:
+        pass
+
+    scheduler = SchedulerStats()
+    scheduler.best_checkpoint_path = best_checkpoint_path
+    scheduler.current_lr = current_lr
+    scheduler.peak_ep_length = peak_ep_length
+    scheduler.best_ep_length = best_ep_length
+    scheduler.lr_reductions = lr_reductions
+    scheduler.rollbacks = rollbacks
+
+    def get_stats():
+        return {
+            "current_lr": scheduler.current_lr,
+            "peak_ep_length": scheduler.peak_ep_length,
+            "best_ep_length": scheduler.best_ep_length,
+            "lr_reductions": scheduler.lr_reductions,
+            "rollbacks": scheduler.rollbacks,
+        }
+    scheduler.get_stats = get_stats
+
+    print(f"\n{'='*60}")
+    print("ADAPTIVE LR TRAINING COMPLETE")
+    print(f"{'='*60}")
+    print(f"  Total iterations: {total_iterations}")
+    print(f"  Total time: {elapsed/60:.1f} minutes")
+    print(f"  Final LR: {current_lr:.2e}")
+    print(f"  Peak episode length: {peak_ep_length:.0f}")
+    print(f"  Best episode length: {best_ep_length:.0f}")
+    print(f"  LR reductions: {lr_reductions}")
+    print(f"  Checkpoint rollbacks: {rollbacks}")
+    print(f"{'='*60}\n")
+
+    return scheduler
+
+
 def get_next_run_dir(base_dir: str) -> str:
     """Get the next run directory with incrementing number."""
     os.makedirs(base_dir, exist_ok=True)
@@ -408,6 +757,13 @@ def main():
         print(f"  Episode length >= {ep_length_threshold:.0f} ({args_cli.early_stop_ep_length_pct*100:.0f}% of {args_cli.episode_length})")
         print(f"  Velocity tracking >= {args_cli.early_stop_vel_tracking*100:.0f}%")
         print(f"  Patience: {args_cli.early_stop_patience} iterations")
+    if args_cli.adaptive_lr:
+        print(f"\nAdaptive Learning Rate Enabled:")
+        print(f"  LR range: [{args_cli.lr_min:.2e}, {args_cli.lr_max:.2e}]")
+        print(f"  Decay factor: {args_cli.lr_decay_factor}x (on collapse)")
+        print(f"  Grow factor: {args_cli.lr_grow_factor}x (on progress)")
+        print(f"  Collapse threshold: {args_cli.collapse_threshold*100:.0f}% of peak")
+        print(f"  Rollback threshold: {args_cli.rollback_threshold*100:.0f}% of peak")
     print(f"{'='*60}\n")
 
     # Create runner
@@ -437,12 +793,16 @@ def main():
     print("\nStarting training...")
     start_time = dt.now()
 
-    runner.learn(num_learning_iterations=agent_cfg_obj.max_iterations, init_at_random_ep_len=True)
+    if args_cli.adaptive_lr:
+        # Use adaptive learning rate training loop
+        scheduler = train_with_adaptive_lr(runner, agent_cfg_obj.max_iterations, args_cli, log_dir)
+    else:
+        # Use standard training loop
+        runner.learn(num_learning_iterations=agent_cfg_obj.max_iterations, init_at_random_ep_len=True)
 
     # Save final model
     final_model_path = os.path.join(log_dir, "model_final.pt")
     runner.save(final_model_path)
-
 
     end_time = dt.now()
     duration = end_time - start_time
@@ -452,6 +812,10 @@ def main():
     print(f"{'='*60}")
     print(f"Duration: {duration}")
     print(f"Final model: {final_model_path}")
+    if args_cli.adaptive_lr:
+        stats = scheduler.get_stats()
+        print(f"Best checkpoint: {scheduler.best_checkpoint_path}")
+        print(f"Peak episode length: {stats['peak_ep_length']:.0f}")
     print(f"{'='*60}\n")
 
     # Cleanup

@@ -39,6 +39,9 @@ from isaaclab.utils.noise import AdditiveGaussianNoiseCfg
 # Import MDP components
 import isaaclab_tasks.manager_based.locomotion.velocity.mdp as mdp
 
+# Import custom MDP components (arm swing, posture rewards)
+from . import mdp as custom_mdp
+
 # Import Digit robot
 from isaaclab_assets.robots.agility import DIGIT_V4_CFG as DIGIT_CFG
 
@@ -346,6 +349,34 @@ class BaselineRewardsCfg:
     termination_penalty = RewardTermCfg(
         func=mdp.is_terminated,
         weight=-2.0,  # Penalty for falling
+    )
+
+    # === Upright Posture (Prevent Forward Lean) ===
+    # Keep body close to 90° vertical - prevents excessive forward tilt
+    # that causes arms to swing backward
+    upright_posture = RewardTermCfg(
+        func=custom_mdp.upright_posture_reward,
+        weight=0.3,  # Moderate reward for staying upright
+        params={"command_name": "base_velocity"},
+    )
+    excessive_forward_lean = RewardTermCfg(
+        func=custom_mdp.excessive_forward_lean_penalty,
+        weight=-0.5,  # Penalize forward lean beyond ~6 degrees
+        params={"max_lean": 0.1},  # ~6 degrees max
+    )
+
+    # === Arm Swing Coordination ===
+    # Encourage natural arm-leg opposition (left arm with right leg)
+    arm_leg_coordination = RewardTermCfg(
+        func=custom_mdp.arm_leg_phase_coordination,
+        weight=0.1,  # Light encouragement for coordination
+        params={"command_name": "base_velocity"},
+    )
+    # Penalize backward arm bias - arms should swing equally forward/back
+    arm_swing_bias = RewardTermCfg(
+        func=custom_mdp.arm_swing_center_bias_penalty,
+        weight=-0.2,  # Penalize consistent backward arm position
+        params={"command_name": "base_velocity", "neutral_pitch": 0.0},
     )
 
 
