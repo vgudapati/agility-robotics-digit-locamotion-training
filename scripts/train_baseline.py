@@ -5,17 +5,21 @@ This script implements the two-stage training from the Science Robotics paper:
 2. Stage 2: Train student policy (Transformer with noisy obs + teacher distillation)
 
 Usage:
-    # Stage 1: Train teacher (MLP with privileged state, fast convergence)
-    ./isaaclab.bat -p scripts/train_baseline.py --task Digit-BaselineTeacher-v0 --headless
+    # Stage 1: Train teacher (single GPU)
+    ./isaaclab.sh -p scripts/train_baseline.py --task Digit-BaselineTeacher-v0 --headless
+
+    # Stage 1: Train teacher (distributed, 8 GPUs)
+    python -m torch.distributed.run --nnodes=1 --nproc_per_node=8 \
+        scripts/train_baseline.py --task Digit-BaselineTeacher-v0 --headless --distributed
 
     # Stage 2: Train student with MLP baseline (for comparison)
-    ./isaaclab.bat -p scripts/train_baseline.py --task Digit-Baseline-v0 --headless
+    ./isaaclab.sh -p scripts/train_baseline.py --task Digit-Baseline-v0 --headless
 
     # Alternative: Train LSTM baseline (for comparison)
-    ./isaaclab.bat -p scripts/train_baseline.py --task Digit-BaselineLSTM-v0 --headless
+    ./isaaclab.sh -p scripts/train_baseline.py --task Digit-BaselineLSTM-v0 --headless
 
     # Optional: Resume from checkpoint
-    ./isaaclab.bat -p scripts/train_baseline.py --task Digit-Baseline-v0 --resume \
+    ./isaaclab.sh -p scripts/train_baseline.py --task Digit-Baseline-v0 --resume \
         --checkpoint logs/digit_baseline/run_001/model_5000.pt --headless
 
 Paper reference:
@@ -68,6 +72,8 @@ parser.add_argument("--seed", type=int, default=None, help="Random seed")
 parser.add_argument("--max_iterations", type=int, default=None, help="Max training iterations")
 parser.add_argument("--resume", action="store_true", help="Resume from checkpoint")
 parser.add_argument("--checkpoint", type=str, default=None, help="Checkpoint path to resume from")
+parser.add_argument("--distributed", action="store_true", default=False,
+                    help="Run training with multiple GPUs or nodes.")
 parser.add_argument("--video", action="store_true", help="Record video during training")
 parser.add_argument("--video_length", type=int, default=200, help="Video length in steps")
 parser.add_argument("--video_interval", type=int, default=2000, help="Video recording interval")
@@ -133,12 +139,28 @@ def find_latest_checkpoint(log_dir: str) -> str | None:
 
 def main():
     """Main training function."""
-    print(f"\n{'='*60}")
-    print(f"BASELINE TRAINING (Radosavovic et al. 2024)")
-    print(f"{'='*60}")
-    print(f"Task: {args_cli.task}")
-    print(f"Resume: {args_cli.resume}")
-    print(f"{'='*60}\n")
+    # Determine distributed training settings
+    is_distributed = args_cli.distributed
+    local_rank = 0
+    global_rank = 0
+    world_size = 1
+
+    if is_distributed:
+        local_rank = app_launcher.local_rank
+        global_rank = app_launcher.global_rank
+        world_size = int(os.getenv("WORLD_SIZE", 1))
+
+    is_main_rank = (global_rank == 0)
+
+    if is_main_rank:
+        print(f"\n{'='*60}")
+        print(f"BASELINE TRAINING (Radosavovic et al. 2024)")
+        print(f"{'='*60}")
+        print(f"Task: {args_cli.task}")
+        print(f"Resume: {args_cli.resume}")
+        if is_distributed:
+            print(f"Distributed: {world_size} GPUs")
+        print(f"{'='*60}\n")
 
     # Get environment spec
     env_cfg = gym.spec(args_cli.task).kwargs["env_cfg_entry_point"]
@@ -161,40 +183,56 @@ def main():
     if args_cli.max_iterations is not None:
         agent_cfg_obj.max_iterations = args_cli.max_iterations
 
-    # Setup logging directory
+    # Configure device and env count for distributed training
+    if is_distributed:
+        env_cfg_obj.sim.device = f"cuda:{local_rank}"
+        agent_cfg_obj.seed = agent_cfg_obj.seed + local_rank
+        # Split environments across GPUs
+        total_envs = env_cfg_obj.scene.num_envs
+        env_cfg_obj.scene.num_envs = total_envs // world_size
+        if is_main_rank:
+            print(f"Distributed: {total_envs} total envs -> {env_cfg_obj.scene.num_envs} per GPU")
+
+    device = f"cuda:{local_rank}" if is_distributed else "cuda:0"
+
+    # Setup logging directory (only rank 0 creates dirs and log files)
     log_root = os.path.join("logs", agent_cfg_obj.experiment_name)
+    tee_logger = None
 
     if args_cli.resume and args_cli.checkpoint:
-        # Use parent directory of checkpoint
         log_dir = os.path.dirname(args_cli.checkpoint)
     else:
-        # Create new run directory
+        # All ranks compute the same log_dir (same filesystem view before any mkdir)
         log_dir = get_next_run_dir(log_root)
 
     os.makedirs(log_dir, exist_ok=True)
 
-    # Setup logging to file
-    timestamp = dt.now().strftime("%Y%m%d_%H%M%S")
-    log_file = os.path.join(log_dir, f"training_{timestamp}.log")
-    tee_logger = TeeLogger(log_file)
-    sys.stdout = tee_logger
+    if is_main_rank:
+        # Setup logging to file (rank 0 only)
+        timestamp = dt.now().strftime("%Y%m%d_%H%M%S")
+        log_file = os.path.join(log_dir, f"training_{timestamp}.log")
+        tee_logger = TeeLogger(log_file)
+        sys.stdout = tee_logger
 
     # Set resume flag
     agent_cfg_obj.resume = args_cli.resume
 
     # Create environment
-    print(f"Creating environment with {env_cfg_obj.scene.num_envs} envs...")
+    if is_main_rank:
+        print(f"Creating environment with {env_cfg_obj.scene.num_envs} envs (on {device})...")
     env = gym.make(args_cli.task, cfg=env_cfg_obj, render_mode=None)
 
     # Wrap environment for RSL-RL
     env = RslRlVecEnvWrapper(env)
 
     # Create runner
-    print(f"Creating PPO runner...")
-    print(f"  Policy type: {agent_cfg_obj.policy.__class__.__name__}")
-    print(f"  Log directory: {log_dir}")
+    if is_main_rank:
+        print(f"Creating PPO runner...")
+        print(f"  Policy type: {agent_cfg_obj.policy.__class__.__name__}")
+        print(f"  Log directory: {log_dir}")
+        print(f"  Device: {device}")
 
-    runner = OnPolicyRunner(env, agent_cfg_obj.to_dict(), log_dir=log_dir, device="cuda:0")
+    runner = OnPolicyRunner(env, agent_cfg_obj.to_dict(), log_dir=log_dir, device=device)
 
     # Load checkpoint if resuming
     if args_cli.resume:
@@ -203,24 +241,30 @@ def main():
             checkpoint_path = find_latest_checkpoint(log_dir)
 
         if checkpoint_path and os.path.exists(checkpoint_path):
-            print(f"Loading checkpoint: {checkpoint_path}")
+            if is_main_rank:
+                print(f"Loading checkpoint: {checkpoint_path}")
             runner.load(checkpoint_path)
-        else:
+        elif is_main_rank:
             print(f"Warning: No checkpoint found, starting from scratch")
 
     # Print training info
-    print(f"\n{'='*60}")
-    print(f"TRAINING CONFIGURATION")
-    print(f"{'='*60}")
-    print(f"Task: {args_cli.task}")
-    print(f"Num envs: {env_cfg_obj.scene.num_envs}")
-    print(f"Max iterations: {agent_cfg_obj.max_iterations}")
-    print(f"Steps per env: {agent_cfg_obj.num_steps_per_env}")
-    print(f"Log directory: {log_dir}")
-    print(f"{'='*60}\n")
+    if is_main_rank:
+        print(f"\n{'='*60}")
+        print(f"TRAINING CONFIGURATION")
+        print(f"{'='*60}")
+        print(f"Task: {args_cli.task}")
+        print(f"Num envs per GPU: {env_cfg_obj.scene.num_envs}")
+        if is_distributed:
+            print(f"Total envs: {env_cfg_obj.scene.num_envs * world_size}")
+            print(f"World size: {world_size}")
+        print(f"Max iterations: {agent_cfg_obj.max_iterations}")
+        print(f"Steps per env: {agent_cfg_obj.num_steps_per_env}")
+        print(f"Log directory: {log_dir}")
+        print(f"{'='*60}\n")
 
     # Start training
-    print("Starting training...")
+    if is_main_rank:
+        print("Starting training...")
     start_time = dt.now()
 
     runner.learn(num_learning_iterations=agent_cfg_obj.max_iterations, init_at_random_ep_len=True)
@@ -232,20 +276,21 @@ def main():
     end_time = dt.now()
     duration = end_time - start_time
 
-    print(f"\n{'='*60}")
-    print(f"TRAINING COMPLETE")
-    print(f"{'='*60}")
-    print(f"Duration: {duration}")
-    print(f"Final model: {final_model_path}")
-    print(f"{'='*60}\n")
+    if is_main_rank:
+        print(f"\n{'='*60}")
+        print(f"TRAINING COMPLETE")
+        print(f"{'='*60}")
+        print(f"Duration: {duration}")
+        print(f"Final model: {final_model_path}")
+        print(f"{'='*60}\n")
 
     # Cleanup
     env.close()
 
-    # Close log file
-    sys.stdout = tee_logger.terminal
-    tee_logger.close()
-    print(f"Log saved to: {log_file}")
+    if tee_logger is not None:
+        sys.stdout = tee_logger.terminal
+        tee_logger.close()
+        print(f"Log saved to: {log_file}")
 
 
 if __name__ == "__main__":
