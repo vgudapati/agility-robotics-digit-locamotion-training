@@ -12,6 +12,11 @@ Usage:
     python -m torch.distributed.run --nnodes=1 --nproc_per_node=8 \
         scripts/train_baseline.py --task Digit-BaselineTeacher-v0 --headless --distributed
 
+    # Stage 1: Train teacher (distributed, 8 GPUs, max envs)
+    python -m torch.distributed.run --nnodes=1 --nproc_per_node=8 \
+        scripts/train_baseline.py --task Digit-BaselineTeacher-v0 --num_envs 262144 \
+        --headless --distributed
+
     # Stage 2: Train student with MLP baseline (for comparison)
     ./isaaclab.sh -p scripts/train_baseline.py --task Digit-Baseline-v0 --headless
 
@@ -21,6 +26,33 @@ Usage:
     # Optional: Resume from checkpoint
     ./isaaclab.sh -p scripts/train_baseline.py --task Digit-Baseline-v0 --resume \
         --checkpoint logs/digit_baseline/run_001/model_5000.pt --headless
+
+Distributed training hyperparameter scaling:
+    When --distributed is used, the following hyperparameters are automatically
+    scaled to ensure faster convergence compared to single-GPU training:
+
+    1. Learning rate: scaled by sqrt(world_size / 2).
+       Rationale: gradients are averaged across GPUs via all-reduce, so each
+       update uses a lower-variance gradient estimate. Full sqrt(N) scaling
+       was found to be too aggressive for PPO with adaptive KL — it caused
+       noise std to grow unchecked and reward to collapse after ~250 iters.
+       sqrt(N/2) provides a safer balance between speed and stability.
+
+    2. Mini-batches: scaled so each per-GPU mini-batch contains ~98K transitions,
+       matching the single-GPU default (16384 envs * 48 steps / 8 mini-batches).
+       This prevents excessively large mini-batches that waste the benefit of
+       stochastic mini-batch updates within each PPO epoch.
+
+    3. Learning epochs: increased by 1 (capped at 8). Too many epochs (e.g. +3)
+       caused overfitting to recent experience and policy oscillation. A modest
+       increase captures some benefit of diverse multi-GPU experience without
+       destabilizing training.
+
+    Example with 8x RTX 5090 and 262,144 total envs:
+        Per GPU: 32,768 envs, 1.57M transitions/iter
+        LR: 1e-3 -> 2.0e-3 (sqrt(8/2) scaling)
+        Mini-batches: 8 -> 16 (1.57M / 98K)
+        Learning epochs: 5 -> 6
 
 Paper reference:
     "Real-world humanoid locomotion with reinforcement learning"
@@ -192,6 +224,36 @@ def main():
         env_cfg_obj.scene.num_envs = total_envs // world_size
         if is_main_rank:
             print(f"Distributed: {total_envs} total envs -> {env_cfg_obj.scene.num_envs} per GPU")
+
+        # Scale hyperparameters for multi-GPU convergence
+        import math
+        base_lr = agent_cfg_obj.algorithm.learning_rate
+        base_mini_batches = agent_cfg_obj.algorithm.num_mini_batches
+        base_epochs = agent_cfg_obj.algorithm.num_learning_epochs
+
+        # 1. Scale learning rate conservatively — sqrt(world_size) was too aggressive
+        #    and caused reward collapse after ~250 iters (noise std grew unchecked).
+        #    sqrt(world_size/2) provides a safer scaling that still benefits from
+        #    the lower-variance gradients of multi-GPU all-reduce.
+        agent_cfg_obj.algorithm.learning_rate = base_lr * math.sqrt(world_size / 2)
+
+        # 2. Scale mini-batches to keep per-GPU mini-batch size similar to single-GPU
+        #    default: 16384 envs * 48 steps / 8 mini-batches = ~98K per mini-batch
+        envs_per_gpu = env_cfg_obj.scene.num_envs
+        transitions_per_gpu = envs_per_gpu * agent_cfg_obj.num_steps_per_env
+        target_minibatch_size = 98_304  # single-GPU default
+        agent_cfg_obj.algorithm.num_mini_batches = max(
+            4, round(transitions_per_gpu / target_minibatch_size)
+        )
+
+        # 3. Slight increase in learning epochs — too many (8) caused overfitting
+        #    and policy oscillation. +1 is conservative but safe.
+        agent_cfg_obj.algorithm.num_learning_epochs = min(base_epochs + 1, 8)
+
+        if is_main_rank:
+            print(f"  LR scaled: {base_lr:.1e} -> {agent_cfg_obj.algorithm.learning_rate:.2e}")
+            print(f"  Mini-batches scaled: {base_mini_batches} -> {agent_cfg_obj.algorithm.num_mini_batches}")
+            print(f"  Learning epochs scaled: {base_epochs} -> {agent_cfg_obj.algorithm.num_learning_epochs}")
 
     device = f"cuda:{local_rank}" if is_distributed else "cuda:0"
 
