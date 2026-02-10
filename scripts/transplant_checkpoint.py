@@ -23,18 +23,14 @@ import sys
 import torch
 
 
-# Known Digit V4 arm joint name patterns (from digit.py asset definition)
-ARM_PATTERNS = [
-    re.compile(r".*shoulder_roll"),
-    re.compile(r".*shoulder_pitch"),
-    re.compile(r".*shoulder_yaw"),
-    re.compile(r".*elbow"),
-]
+# Known Digit V4 arm joint name pattern (from USD: left_arm_shoulder_pitch, etc.)
+# Matches all 14 arm joints: shoulder (roll/pitch/yaw), elbow, wrist (roll/pitch/yaw) x2
+ARM_PATTERN = re.compile(r".*_arm_.*")
 
 
 def is_arm_joint(name: str) -> bool:
-    """Check if a joint name matches arm patterns."""
-    return any(p.fullmatch(name) for p in ARM_PATTERNS)
+    """Check if a joint name matches arm pattern (.*_arm_.*)."""
+    return bool(ARM_PATTERN.fullmatch(name))
 
 
 def get_joint_names_from_env():

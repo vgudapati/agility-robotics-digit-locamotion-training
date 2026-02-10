@@ -71,17 +71,12 @@ class BaselineSceneCfg(InteractiveSceneCfg):
         prim_path="{ENV_REGEX_NS}/Robot",
         actuators={
             "body": ImplicitActuatorCfg(
-                joint_names_expr=["(?!.*(shoulder|elbow)).*"],
+                joint_names_expr=["(?!.*_arm_).*"],
                 stiffness=None,   # Use USD defaults (legs work fine)
                 damping=None,
             ),
             "arms": IdealPDActuatorCfg(
-                joint_names_expr=[
-                    ".*shoulder_roll",
-                    ".*shoulder_pitch",
-                    ".*shoulder_yaw",
-                    ".*elbow",
-                ],
+                joint_names_expr=[".*_arm_.*"],
                 stiffness=200.0,   # High stiffness to hold arms at default pose
                 damping=10.0,      # Strong damping to prevent oscillation
                 effort_limit=100.0,  # Max torque per arm joint (Nm)
@@ -142,7 +137,7 @@ class BaselineActionsCfg:
 
     joint_pos = mdp.JointPositionActionCfg(
         asset_name="robot",
-        joint_names=["(?!.*(shoulder|elbow)).*"],  # Legs and body only — arms locked at default pose
+        joint_names=["(?!.*_arm_).*"],  # Legs and body only (36 joints) — arms locked at default pose
         scale=0.25,
         use_default_offset=True,
     )

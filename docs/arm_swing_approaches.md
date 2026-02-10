@@ -14,18 +14,16 @@ Multiple soft approaches were tried and failed:
 - **IdealPDActuatorCfg stiffness=200**: Arms track commands but policy CHOOSES T-pose
 - **mechanical_power_penalty**: -0.05/episode, negligible vs tracking rewards
 
-### Critical Bug Discovered
+### Joint Name Verification
 
-The joint name patterns were wrong the entire time:
-- Pattern `.*_arm_.*` matches **zero joints** — actual names are `left_shoulder_roll`,
-  `right_elbow`, etc. (no `_arm_` substring)
-- Pattern `(?!.*_arm_).*` matches **all joints** including arms
-- **IdealPDActuatorCfg was never applied to arm joints**
-- **Arm locking never actually locked anything**
+The USD joint names DO contain `_arm_` (e.g., `left_arm_shoulder_pitch`, `right_arm_elbow`).
+The patterns `.*_arm_.*` and `(?!.*_arm_).*` are correct.
 
-Correct patterns:
-- Arms: `.*shoulder.*|.*elbow.*` (or list: `[".*shoulder_roll", ".*shoulder_pitch", ".*shoulder_yaw", ".*elbow"]`)
-- Non-arms: `(?!.*(shoulder|elbow)).*`
+Total: 50 joints (36 leg/body + 14 arm including 6 wrist joints).
+Arm indices: [1, 3, 5, 7, 9, 11, 16, 21, 23, 25, 29, 33, 41, 49]
+
+Note: The custom digit.py had incorrect joint names (`left_shoulder_roll` instead of
+`left_arm_shoulder_roll`). The USD is the source of truth.
 
 ### Gap Analysis vs Radosavovic et al. (2024)
 
@@ -33,7 +31,6 @@ The paper achieved natural arm swing through energy minimization alone. Key gaps
 
 | Gap | Paper | Our Setup |
 |-----|-------|-----------|
-| Joint patterns | Working actuators | Broken (match nothing) |
 | Energy terms | Primary driver of arm swing | -0.05/ep (negligible, 280x weaker than joint_acc_l2) |
 | joint_acc_l2 | Balanced with other terms | Dominates at -14/ep (80% of all penalty) |
 | Arm constraints | None — let swing emerge | shoulder penalties actively fight emergence |
@@ -49,13 +46,9 @@ The paper achieved natural arm swing through energy minimization alone. Key gaps
 
 ### Changes Required
 
-1. **Fix joint name patterns** (P0 bug):
-   - Arm actuator: `[".*shoulder_roll", ".*shoulder_pitch", ".*shoulder_yaw", ".*elbow"]`
-   - Body actuator: `["(?!.*(shoulder|elbow)).*"]`
-
-2. **Lock arms in action space**:
-   - `joint_names=["(?!.*(shoulder|elbow)).*"]` — exclude arm joints from policy control
-   - IdealPDActuatorCfg with high stiffness holds arms at default position (arms down)
+1. **Lock arms in action space**:
+   - `joint_names=["(?!.*_arm_).*"]` — exclude 14 arm joints from policy control (36 remaining)
+   - IdealPDActuatorCfg (`.*_arm_.*`) with high stiffness holds arms at default position
 
 3. **Remove arm reward terms**:
    - Delete `shoulder_roll_penalty` and `shoulder_pitch_penalty`
