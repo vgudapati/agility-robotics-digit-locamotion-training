@@ -25,6 +25,7 @@ from .baseline_env_cfg import (
     DigitBaselineFastWalkingEnvCfg,
     DigitBaselineSlowJoggingEnvCfg,
     DigitBaselineJoggingEnvCfg,
+    DigitBaselineModerateRunningEnvCfg,
     DigitBaselineRunningEnvCfg,
     DigitBaselineFastRunningEnvCfg,
 )
@@ -201,6 +202,17 @@ gym.register(
     },
 )
 
+# Community-standard teacher: faster convergence via tuned PPO hyperparameters
+gym.register(
+    id="Digit-BaselineTeacherCommunityStandard-v0",
+    entry_point="isaaclab.envs:ManagerBasedRLEnv",
+    disable_env_checker=True,
+    kwargs={
+        "env_cfg_entry_point": f"{__name__}.baseline_env_cfg:DigitBaselineTeacherEnvCfg",
+        "rsl_rl_cfg_entry_point": f"{__name__.rsplit('.', 2)[0]}.agents.baseline_cfg:DigitBaselineTeacherCommunityPPORunnerCfg",
+    },
+)
+
 # LSTM baseline for comparison (paper shows transformer >> LSTM)
 gym.register(
     id="Digit-BaselineLSTM-v0",
@@ -248,6 +260,17 @@ gym.register(
     },
 )
 
+# Baseline curriculum: Moderate Running (0-4 m/s) - Bridge between jogging and running
+gym.register(
+    id="Digit-BaselineModerateRunning-v0",
+    entry_point="isaaclab.envs:ManagerBasedRLEnv",
+    disable_env_checker=True,
+    kwargs={
+        "env_cfg_entry_point": f"{__name__}.baseline_env_cfg:DigitBaselineModerateRunningEnvCfg",
+        "rsl_rl_cfg_entry_point": f"{__name__.rsplit('.', 2)[0]}.agents.baseline_cfg:DigitBaselineTeacherPPORunnerCfg",
+    },
+)
+
 # Baseline curriculum: Running (0-5 m/s)
 gym.register(
     id="Digit-BaselineRunning-v0",
@@ -291,6 +314,7 @@ __all__ = [
     "DigitBaselineFastWalkingEnvCfg",
     "DigitBaselineSlowJoggingEnvCfg",
     "DigitBaselineJoggingEnvCfg",
+    "DigitBaselineModerateRunningEnvCfg",
     "DigitBaselineRunningEnvCfg",
     "DigitBaselineFastRunningEnvCfg",
 ]

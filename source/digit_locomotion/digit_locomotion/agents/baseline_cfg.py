@@ -96,11 +96,61 @@ class DigitBaselineTeacherPPORunnerCfg(RslRlOnPolicyRunnerCfg):
         entropy_coef=0.01,
         num_learning_epochs=5,
         num_mini_batches=8,
-        learning_rate=1.0e-3,
+        learning_rate=3.0e-4,  # Lower initial LR to prevent spike
         schedule="adaptive",
         desired_kl=0.01,
         max_grad_norm=1.0,
         gamma=0.99,
+        lam=0.95,
+    )
+
+
+@configclass
+class DigitBaselineTeacherCommunityPPORunnerCfg(RslRlOnPolicyRunnerCfg):
+    """Community-standard PPO configuration for TEACHER policy.
+
+    Tuned for faster convergence based on legged_gym/IsaacLab community defaults:
+    - num_steps_per_env: 48 -> 24 (halves collection time, 2x faster iterations)
+    - num_mini_batches: 8 -> 4 (larger batches = more stable gradients)
+    - num_learning_epochs: 5 -> 8 (more gradient updates per rollout)
+    - init_noise_std: 1.0 -> 0.8 (less chaotic for high-DOF humanoid)
+    - gamma: 0.99 -> 0.97 (shorter horizon for early training survival)
+    - Network: [512,256,128] (3 layers, matches AnymalB standard)
+
+    Sources: legged_gym defaults, IsaacLab AnymalB config, Unitree G1 config.
+    """
+
+    seed = 42
+    num_steps_per_env = 24  # Community standard (was 48)
+    max_iterations = 10000
+    save_interval = 50
+    experiment_name = "digit_baseline_teacher_community"
+    run_name = ""
+    logger = "tensorboard"
+    neptune_project = ""
+    wandb_project = ""
+    resume = False
+    empirical_normalization = False
+
+    policy: RslRlPpoActorCriticCfg = RslRlPpoActorCriticCfg(
+        init_noise_std=0.8,  # Reduced for humanoid (Unitree G1 standard)
+        actor_hidden_dims=[512, 256, 128],  # 3-layer (AnymalB standard)
+        critic_hidden_dims=[512, 256, 128],
+        activation="elu",
+    )
+
+    algorithm: RslRlPpoAlgorithmCfg = RslRlPpoAlgorithmCfg(
+        value_loss_coef=1.0,
+        use_clipped_value_loss=True,
+        clip_param=0.2,
+        entropy_coef=0.02,  # Increased to push past plateau (was 0.01)
+        num_learning_epochs=8,  # More gradient steps (was 5)
+        num_mini_batches=4,  # Larger batches (was 8)
+        learning_rate=3.0e-4,
+        schedule="adaptive",
+        desired_kl=0.01,
+        max_grad_norm=1.0,
+        gamma=0.99,  # Restored: longer horizon now that robot survives 72+ steps
         lam=0.95,
     )
 
@@ -181,7 +231,7 @@ class DigitBaselineMlpPPORunnerCfg(RslRlOnPolicyRunnerCfg):
         entropy_coef=0.01,
         num_learning_epochs=5,
         num_mini_batches=8,
-        learning_rate=1.0e-3,
+        learning_rate=3.0e-4,  # Lower initial LR to prevent spike
         schedule="adaptive",
         desired_kl=0.01,
         max_grad_norm=1.0,
@@ -227,7 +277,7 @@ class DigitBaselineRecurrentPPORunnerCfg(RslRlOnPolicyRunnerCfg):
         entropy_coef=0.01,
         num_learning_epochs=5,
         num_mini_batches=8,
-        learning_rate=1.0e-3,
+        learning_rate=3.0e-4,  # Lower initial LR to prevent spike
         schedule="adaptive",
         desired_kl=0.01,
         max_grad_norm=1.0,

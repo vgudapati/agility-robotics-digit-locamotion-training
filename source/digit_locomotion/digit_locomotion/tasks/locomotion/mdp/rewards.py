@@ -21,6 +21,23 @@ if TYPE_CHECKING:
 
 
 # =============================================================================
+# SURVIVAL REWARDS
+# =============================================================================
+
+def is_alive(env: ManagerBasedRLEnv) -> torch.Tensor:
+    """Return 1.0 for all environments that are still alive.
+
+    This serves as a survival bonus - the agent gets +1 reward for each
+    timestep it stays alive. This encourages the agent to survive longer
+    rather than dying quickly to minimize accumulated negative rewards.
+
+    Returns:
+        Tensor of 1.0 for all environments (since dead envs are reset).
+    """
+    return torch.ones(env.num_envs, device=env.device)
+
+
+# =============================================================================
 # COMMAND TRACKING REWARDS
 # =============================================================================
 
@@ -899,6 +916,57 @@ def arm_swing_center_bias_penalty(
     return bias_penalty * moving.float()
 
 
+def shoulder_roll_penalty(
+    env: ManagerBasedRLEnv,
+    asset_cfg: SceneEntityCfg,
+) -> torch.Tensor:
+    """Penalize shoulder roll deviation from default position (arms-at-sides).
+
+    The broad `joint_deviation_l1` on all arm joints dilutes the shoulder roll
+    signal across pitch, yaw, elbow, and wrist joints. This reward targets
+    ONLY shoulder roll joints with L2 penalty for a stronger gradient near
+    the target (default pose = arms down at sides).
+
+    Uses default_joint_pos as target, which for Digit V4 corresponds to arms
+    hanging naturally at the robot's sides.
+
+    Args:
+        env: The environment instance.
+        asset_cfg: Configuration specifying shoulder roll joints.
+
+    Returns:
+        Sum of squared shoulder roll deviation from default (use with negative weight).
+    """
+    asset = env.scene[asset_cfg.name]
+    joint_pos = asset.data.joint_pos[:, asset_cfg.joint_ids]
+    default_pos = asset.data.default_joint_pos[:, asset_cfg.joint_ids]
+    return torch.sum(torch.square(joint_pos - default_pos), dim=1)
+
+
+def joint_position_target_l2(
+    env: ManagerBasedRLEnv,
+    asset_cfg: SceneEntityCfg,
+    target: float = 0.0,
+) -> torch.Tensor:
+    """Penalize joint deviation from a specified target angle (not default).
+
+    Unlike shoulder_roll_penalty which targets default_joint_pos, this function
+    targets an arbitrary angle. Useful for encouraging specific postures like
+    elbow bend during running.
+
+    Args:
+        env: The environment instance.
+        asset_cfg: Configuration specifying which joints to target.
+        target: Target angle in radians for all specified joints.
+
+    Returns:
+        Sum of squared deviation from target (use with negative weight).
+    """
+    asset = env.scene[asset_cfg.name]
+    joint_pos = asset.data.joint_pos[:, asset_cfg.joint_ids]
+    return torch.sum(torch.square(joint_pos - target), dim=1)
+
+
 def excessive_forward_lean_penalty(
     env: ManagerBasedRLEnv,
     max_lean: float = 0.1,  # ~6 degrees max forward lean
@@ -934,6 +1002,24 @@ def excessive_forward_lean_penalty(
     excess_lean = torch.clamp(forward_lean - max_lean, min=0.0)
 
     return torch.square(excess_lean)
+
+
+def mechanical_power_penalty(env: ManagerBasedRLEnv) -> torch.Tensor:
+    """Penalize mechanical power consumption (torque * velocity).
+
+    True energy cost is |torque × angular_velocity| summed over all joints.
+    Unlike joint_torques_l2 (which only penalizes torque magnitude), this
+    captures the actual work done by actuators — flailing arms at high velocity
+    with moderate torque will be heavily penalized.
+
+    Uses applied_torque (after actuator model) rather than commanded action,
+    so it reflects real physical energy expenditure in simulation.
+
+    Returns:
+        Sum of |applied_torque * joint_vel| across all joints (use with negative weight).
+    """
+    robot = env.scene["robot"]
+    return torch.sum(torch.abs(robot.data.applied_torque * robot.data.joint_vel), dim=1)
 
 
 def upright_posture_reward(

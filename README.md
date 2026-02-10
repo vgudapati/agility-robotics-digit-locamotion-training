@@ -34,6 +34,8 @@ This project provides a complete framework for training reinforcement learning p
 
 ### 1. Install Isaac Sim
 
+We need to make sure git lfs module is installed for Isaac Sim after checking gcc/g++ versions
+`sudo apt install git-lfs`
 Download and install Isaac Sim through the [NVIDIA Omniverse Launcher](https://www.nvidia.com/en-us/omniverse/).
 
 ### 2. Install Isaac Lab
@@ -401,3 +403,17 @@ Key randomizations for sim-to-real:
 ## License
 
 MIT License - see [LICENSE](LICENSE) for details.
+
+
+
+Resources Consulted
+Source	Why It's Valuable
+legged_gym default config	The original RSL-RL locomotion framework — establishes the "gold standard" defaults (24 steps, 5 epochs, 4 mini-batches) used by virtually all successful quadruped/humanoid projects
+IsaacLab AnymalB RSL-RL PPO config	Official NVIDIA reference config for IsaacLab locomotion — confirms the legged_gym defaults carry over to the newer IsaacLab framework
+Unitree G1 humanoid config	Most directly comparable to Digit — a high-DOF humanoid (29 joints) using RSL-RL. Uses init_noise_std=0.8, confirming humanoids need lower noise than quadrupeds
+RSL-RL NaN std issue #33	Documents a known failure mode where high init_noise_std + domain randomization causes NaN action std — relevant to your noise std being at 1.35
+Bipedal Walking Deep Dive (Hussein Lezzaik)	Practical guide showing that reward design matters far more than PPO hyperparameters, and using 128-256 envs for debugging before scaling to 4096+
+Radosavovic et al. 2024 (arXiv)	The paper your training pipeline is based on — confirms 50 Hz policy, transformer architecture, and ~10 billion total samples for full convergence
+Humanoid-Gym (roboterax)	Alternative humanoid RL framework showing PPO parameter choices for full-size humanoids
+NVIDIA Spot Quadruped Blog	NVIDIA's own recommendations on sim-to-real training pipeline, confirming the importance of curriculum and domain randomization over PPO tuning
+

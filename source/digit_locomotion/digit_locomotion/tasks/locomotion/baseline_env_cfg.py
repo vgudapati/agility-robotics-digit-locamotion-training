@@ -20,6 +20,7 @@ from __future__ import annotations
 import math
 
 import isaaclab.sim as sim_utils
+from isaaclab.actuators import IdealPDActuatorCfg, ImplicitActuatorCfg
 from isaaclab.assets import ArticulationCfg, AssetBaseCfg
 from isaaclab.envs import ManagerBasedRLEnvCfg
 from isaaclab.managers import (
@@ -66,7 +67,23 @@ class BaselineSceneCfg(InteractiveSceneCfg):
         ),
     )
 
-    robot: ArticulationCfg = DIGIT_CFG.replace(prim_path="{ENV_REGEX_NS}/Robot")
+    robot: ArticulationCfg = DIGIT_CFG.replace(
+        prim_path="{ENV_REGEX_NS}/Robot",
+        actuators={
+            "body": ImplicitActuatorCfg(
+                joint_names_expr=["(?!.*_arm_).*"],
+                stiffness=None,   # Use USD defaults (legs work fine)
+                damping=None,
+            ),
+            "arms": IdealPDActuatorCfg(
+                joint_names_expr=[".*_arm_.*"],
+                stiffness=200.0,   # High stiffness — computes torque in Python, bypasses PhysX drive limits
+                damping=10.0,      # Strong damping to prevent oscillation
+                effort_limit=100.0,  # Max torque per arm joint (Nm)
+                velocity_limit=10.0,  # Max joint velocity (rad/s)
+            ),
+        },
+    )
 
     contact_forces = ContactSensorCfg(
         prim_path="{ENV_REGEX_NS}/Robot/.*",
@@ -120,7 +137,7 @@ class BaselineActionsCfg:
 
     joint_pos = mdp.JointPositionActionCfg(
         asset_name="robot",
-        joint_names=[".*"],
+        joint_names=["(?!.*_arm_).*"],  # Legs and body only — arms locked at default pose
         scale=0.25,
         use_default_offset=True,
     )
@@ -259,8 +276,8 @@ class BaselineRewardsCfg:
     # === Survival Bonus (CRITICAL) ===
     # Without this, the policy learns to die quickly to minimize cumulative penalties
     is_alive = RewardTermCfg(
-        func=mdp.is_alive,
-        weight=1.0,  # Restored to original
+        func=custom_mdp.is_alive,
+        weight=1.0,
     )
 
     # === Tracking Rewards ===
@@ -278,26 +295,56 @@ class BaselineRewardsCfg:
     # === Energy Minimization (Critical for emergent arm swing) ===
     # Paper: "reward function included energy minimization terms, which might
     # suggest a relationship between the observed motions and energy expenditure"
-    # NOTE: Reduced from -1e-5 to -1e-6 to match working configs
     joint_torques_l2 = RewardTermCfg(
         func=mdp.joint_torques_l2,
-        weight=-1e-5,  # 10x stronger energy penalty for arm posture
+        weight=-1e-6,  # Matches successful runs (005, 007, 008)
     )
-    # Penalize sideways arm extension (T-pose) but allow forward/backward swing
-    # shoulder_roll controls sideways movement - penalize deviation from default (arms down)
-    # shoulder_pitch controls forward/backward swing - leave free for natural arm swing
-    arm_shoulder_roll_deviation = RewardTermCfg(
-        func=mdp.joint_deviation_l1,
-        weight=-0.1,  # Minimal arm penalty - prioritize velocity first, then increase
-        params={"asset_cfg": SceneEntityCfg("robot", joint_names=[".*_arm_shoulder_roll"])},
+    # Mechanical power = |torque × velocity| — true energy expenditure.
+    # Penalizes flailing arms (high velocity + moderate torque) more than
+    # joint_torques_l2 alone. Key insight: T-posing arms at high velocity
+    # burn real energy even if torque is moderate.
+    mechanical_power = RewardTermCfg(
+        func=custom_mdp.mechanical_power_penalty,
+        weight=-1e-5,  # Start conservative — this term can be large
     )
+    # === Posture Correction ===
+    # NOTE: shoulder_roll_penalty and shoulder_pitch_penalty REMOVED.
+    # Arms are now locked (excluded from action space). The IdealPDActuatorCfg
+    # holds them at default position. No need for penalty rewards.
+    #
+    # Penalize base height deviation from standing height - fixes crouching/bent legs
+    # Digit V4 spawn height is 1.05m (pelvis height); target at spawn height
+    # to prevent crouching. Robot total height is ~1.6m.
+    # weight=-1.0 was too weak (robot still heavily crouched at iter 660).
+    # Increased to -5.0 to strongly discourage crouching.
+    base_height = RewardTermCfg(
+        func=mdp.base_height_l2,
+        weight=-5.0,
+        params={
+            "target_height": 1.05,
+            "asset_cfg": SceneEntityCfg("robot"),
+        },
+    )
+    # Penalize excessive forward lean at speed — root cause of bad_orientation
+    # terminations at 4+ m/s. Only penalizes lean beyond ~6 degrees (0.1 rad),
+    # allowing natural slight lean during running.
+    # weight=-5.0 with max_lean=0.1 was barely triggering at 5 m/s (-0.0001).
+    # Lowered threshold to 0.05 rad (~3 deg) to catch lean earlier at speed.
+    forward_lean_penalty = RewardTermCfg(
+        func=custom_mdp.excessive_forward_lean_penalty,
+        weight=-10.0,
+        params={
+            "max_lean": 0.05,  # ~3 degrees threshold (tighter for running)
+        },
+    )
+
     joint_acc_l2 = RewardTermCfg(
         func=mdp.joint_acc_l2,
         weight=-2.5e-7,
     )
     action_rate_l2 = RewardTermCfg(
         func=mdp.action_rate_l2,
-        weight=-0.01,  # Restored to original
+        weight=-0.01,  # Matches successful runs (005, 007, 008)
     )
     # Removed joint_vel_l2 - too aggressive, caused collapse
 
@@ -351,33 +398,9 @@ class BaselineRewardsCfg:
         weight=-2.0,  # Penalty for falling
     )
 
-    # === Upright Posture (Prevent Forward Lean) ===
-    # Keep body close to 90° vertical - prevents excessive forward tilt
-    # that causes arms to swing backward
-    upright_posture = RewardTermCfg(
-        func=custom_mdp.upright_posture_reward,
-        weight=0.3,  # Moderate reward for staying upright
-        params={"command_name": "base_velocity"},
-    )
-    excessive_forward_lean = RewardTermCfg(
-        func=custom_mdp.excessive_forward_lean_penalty,
-        weight=-0.5,  # Penalize forward lean beyond ~6 degrees
-        params={"max_lean": 0.1},  # ~6 degrees max
-    )
-
-    # === Arm Swing Coordination ===
-    # Encourage natural arm-leg opposition (left arm with right leg)
-    arm_leg_coordination = RewardTermCfg(
-        func=custom_mdp.arm_leg_phase_coordination,
-        weight=0.1,  # Light encouragement for coordination
-        params={"command_name": "base_velocity"},
-    )
-    # Penalize backward arm bias - arms should swing equally forward/back
-    arm_swing_bias = RewardTermCfg(
-        func=custom_mdp.arm_swing_center_bias_penalty,
-        weight=-0.2,  # Penalize consistent backward arm position
-        params={"command_name": "base_velocity", "neutral_pitch": 0.0},
-    )
+    # NOTE: upright_posture, excessive_forward_lean, arm_leg_coordination,
+    # arm_swing_bias removed — were weight=0.0 but still computed by
+    # RewardManager every step. T-pose now fixed via joint_deviation_arms above.
 
 
 # =============================================================================
@@ -547,8 +570,8 @@ class DigitBaselineTeacherEnvCfg(DigitBaselineEnvCfg):
 
     def __post_init__(self):
         super().__post_init__()
-        # Teacher can train faster
-        self.episode_length_s = 15.0
+        # 20s episodes = 1000 max steps (at dt=0.005, decimation=4 → 0.02s/step)
+        self.episode_length_s = 20.0
 
 
 # =============================================================================
@@ -670,6 +693,31 @@ class BaselineJoggingCommandsCfg:
 
 
 @configclass
+class BaselineModerateRunningCommandsCfg:
+    """Velocity commands for moderate running: 0-4 m/s forward.
+
+    Intermediate step between jogging (0-3 m/s) and running (0-5 m/s).
+    The 3→5 m/s jump was too large (92% bad_orientation), so this bridges the gap.
+    """
+
+    base_velocity = mdp.UniformVelocityCommandCfg(
+        asset_name="robot",
+        resampling_time_range=(10.0, 10.0),
+        rel_standing_envs=0.02,
+        rel_heading_envs=1.0,
+        heading_command=True,
+        heading_control_stiffness=0.5,
+        debug_vis=True,
+        ranges=mdp.UniformVelocityCommandCfg.Ranges(
+            lin_vel_x=(0.0, 4.0),       # Moderate running: 0-4 m/s forward
+            lin_vel_y=(-0.25, 0.25),    # Between jogging and running lateral
+            ang_vel_z=(-0.4, 0.4),      # Between jogging and running turning
+            heading=(-math.pi, math.pi),
+        ),
+    )
+
+
+@configclass
 class BaselineRunningCommandsCfg:
     """Velocity commands for running: 0-5 m/s forward."""
 
@@ -709,11 +757,28 @@ class DigitBaselineJoggingEnvCfg(DigitBaselineEnvCfg):
 
 
 @configclass
+class DigitBaselineModerateRunningEnvCfg(DigitBaselineEnvCfg):
+    """Baseline moderate running environment - curriculum step from jogging.
+
+    Intermediate step between jogging (0-3 m/s) and running (0-5 m/s).
+    The direct 3→5 m/s jump caused 92% bad_orientation failures.
+
+    Use with Digit-BaselineModerateRunning-v0 task ID.
+    """
+
+    commands: BaselineModerateRunningCommandsCfg = BaselineModerateRunningCommandsCfg()
+
+    def __post_init__(self):
+        super().__post_init__()
+        self.episode_length_s = 20.0
+
+
+@configclass
 class DigitBaselineRunningEnvCfg(DigitBaselineEnvCfg):
-    """Baseline running environment - curriculum step from jogging.
+    """Baseline running environment - curriculum step from moderate running.
 
     Extends baseline approach to running speeds (0-5 m/s).
-    Continue training from jogging checkpoint for smooth curriculum.
+    Continue training from moderate running checkpoint for smooth curriculum.
 
     Use with Digit-BaselineRunning-v0 task ID.
     """
