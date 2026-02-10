@@ -610,7 +610,19 @@ def main():
 
         if checkpoint_path and os.path.exists(checkpoint_path):
             print(f"Loading checkpoint: {checkpoint_path}")
-            runner.load(checkpoint_path)
+            # Check if optimizer state is valid before loading
+            loaded_dict = torch.load(checkpoint_path, weights_only=False, map_location="cpu")
+            opt_state = loaded_dict.get("optimizer_state_dict", {})
+            has_optimizer = opt_state and "param_groups" in opt_state
+            if has_optimizer:
+                # Full checkpoint — use RSL-RL's native load (model + optimizer + iteration)
+                runner.load(checkpoint_path)
+                print(f"[Checkpoint] Loaded model + optimizer state")
+            else:
+                # Transplanted checkpoint — load model only, skip broken optimizer state
+                runner.alg.policy.load_state_dict(loaded_dict["model_state_dict"])
+                runner.current_learning_iteration = loaded_dict.get("iter", 0)
+                print(f"[Checkpoint] Loaded model only (optimizer state reset — transplanted checkpoint)")
             # Override optimizer LR if explicitly set via CLI
             # (runner.load restores saved optimizer state, overwriting config LR)
             if args_cli.learning_rate is not None:
