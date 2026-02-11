@@ -277,7 +277,7 @@ class BaselineRewardsCfg:
     # Without this, the policy learns to die quickly to minimize cumulative penalties
     is_alive = RewardTermCfg(
         func=custom_mdp.is_alive,
-        weight=1.0,
+        weight=10.0,  # Strong survival incentive for from-scratch training
     )
 
     # === Tracking Rewards ===
@@ -340,18 +340,18 @@ class BaselineRewardsCfg:
 
     joint_acc_l2 = RewardTermCfg(
         func=mdp.joint_acc_l2,
-        weight=-2.5e-7,
+        weight=-5e-8,  # Reduced for from-scratch training (was -2.5e-7, dominated reward)
     )
     action_rate_l2 = RewardTermCfg(
         func=mdp.action_rate_l2,
-        weight=-0.01,  # Matches successful runs (005, 007, 008)
+        weight=-0.005,  # Reduced for from-scratch training (was -0.01)
     )
     # Removed joint_vel_l2 - too aggressive, caused collapse
 
     # === Stability Penalties ===
     lin_vel_z_l2 = RewardTermCfg(
         func=mdp.lin_vel_z_l2,
-        weight=-2.0,  # Restored to original
+        weight=-0.5,  # Reduced for from-scratch training (was -2.0)
     )
     ang_vel_xy_l2 = RewardTermCfg(
         func=mdp.ang_vel_xy_l2,
@@ -395,7 +395,7 @@ class BaselineRewardsCfg:
     # Penalize early termination (falling) to encourage survival
     termination_penalty = RewardTermCfg(
         func=mdp.is_terminated,
-        weight=-2.0,  # Penalty for falling
+        weight=-50.0,  # Moderate penalty — -200 caused value function divergence
     )
 
     # NOTE: upright_posture, excessive_forward_lean, arm_leg_coordination,
