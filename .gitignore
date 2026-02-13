@@ -219,7 +219,7 @@ outputs/
 _isaac_sim/
 
 # Large model files
-*.pt
+
 *.pth
 *.onnx
 !policies/.gitkeep
