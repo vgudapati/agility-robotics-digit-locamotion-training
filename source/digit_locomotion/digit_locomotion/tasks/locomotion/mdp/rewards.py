@@ -265,33 +265,63 @@ def foot_clearance_reward(
     return reward
 
 
-def gait_symmetry(env: ManagerBasedRLEnv) -> torch.Tensor:
-    """Reward symmetric gait between left and right legs.
+def foot_contact_symmetry(
+    env: ManagerBasedRLEnv,
+    sensor_cfg: SceneEntityCfg,
+    command_name: str,
+    threshold: float = 0.5,
+) -> torch.Tensor:
+    """Penalize asymmetric foot contact time (prevents single-leg hopping).
 
-    Encourages natural bipedal walking pattern where left and right
-    legs alternate in a symmetric fashion.
+    Tracks a running average of contact ratio for each foot. If one foot
+    is on the ground much more than the other (e.g., single-leg hopping),
+    returns a large penalty.
+
+    For proper bipedal walking, each foot should spend roughly 50% of time
+    in contact. The penalty is the squared difference from 0.5 for each foot.
+
+    Args:
+        env: The environment instance.
+        sensor_cfg: Configuration for contact force sensor on feet.
+        command_name: Name of the velocity command.
+        threshold: Force threshold to detect contact (N).
 
     Returns:
-        Symmetry reward (higher is more symmetric).
+        Asymmetry penalty (positive value, use with negative weight).
     """
-    robot = env.scene["robot"]
+    contact_sensor = env.scene[sensor_cfg.name]
+    contact_forces = contact_sensor.data.net_forces_w_history[:, 0]
 
-    # Get joint positions for left and right legs
-    # Assumes joint ordering: [left_leg_joints..., right_leg_joints...]
-    joint_pos = robot.data.joint_pos
+    # Detect contact per foot (force above threshold)
+    contact = (torch.norm(contact_forces, dim=-1) > threshold).float()  # (num_envs, num_feet)
 
-    # Number of joints per leg (typically 8 for Digit)
-    n_leg_joints = 8
+    # Initialize running contact ratio tracker
+    if not hasattr(env, "_foot_contact_ratio"):
+        env._foot_contact_ratio = 0.5 * torch.ones(
+            env.num_envs, contact.shape[1], device=env.device
+        )
 
-    left_leg_pos = joint_pos[:, :n_leg_joints]
-    right_leg_pos = joint_pos[:, n_leg_joints:2*n_leg_joints]
+    # Reset EMA for environments that just reset (episode_length_buf == 1 means first step)
+    # This prevents stale asymmetry from previous episodes carrying over
+    just_reset = (env.episode_length_buf <= 1).unsqueeze(-1)  # (num_envs, 1)
+    env._foot_contact_ratio = torch.where(
+        just_reset, 0.5 * torch.ones_like(env._foot_contact_ratio), env._foot_contact_ratio
+    )
 
-    # Compute asymmetry as difference between mirrored positions
-    # For walking, left at phase phi should equal right at phase phi + pi
-    # Simplified: penalize large differences when robot is moving
-    asymmetry = torch.sum(torch.abs(left_leg_pos - right_leg_pos), dim=1)
+    # Exponential moving average of contact ratio (alpha=0.02 for moderate tracking)
+    alpha = 0.02
+    env._foot_contact_ratio = (1 - alpha) * env._foot_contact_ratio + alpha * contact
 
-    return -asymmetry
+    # Penalty: each foot's contact ratio should be near 0.5
+    # Single-leg hopper: one foot ~1.0, other ~0.0 → penalty = 2 * (0.5)^2 = 0.5
+    # Proper walker: both feet ~0.5 → penalty = 2 * (0.0)^2 = 0.0
+    asymmetry = torch.sum(torch.square(env._foot_contact_ratio - 0.5), dim=1)
+
+    # Only penalize when robot should be moving
+    cmd_vel = env.command_manager.get_command(command_name)
+    moving = torch.norm(cmd_vel[:, :2], dim=1) > 0.1
+
+    return asymmetry * moving.float()
 
 
 # =============================================================================

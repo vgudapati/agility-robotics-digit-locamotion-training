@@ -273,22 +273,24 @@ class BaselineRewardsCfg:
     After training, we observed emergent arm-swing motions."
     """
 
-    # === Survival Bonus (CRITICAL) ===
-    # Without this, the policy learns to die quickly to minimize cumulative penalties
+    # === Survival Bonus ===
+    # Balance between survival and tracking. At 10.0 survival dominated (single-leg hopping).
+    # At 2.0 it was too weak for from-scratch (couldn't learn to stand).
+    # 5.0 gives enough incentive to survive while letting tracking reward matter.
     is_alive = RewardTermCfg(
         func=custom_mdp.is_alive,
-        weight=10.0,  # Strong survival incentive for from-scratch training
+        weight=5.0,
     )
 
     # === Tracking Rewards ===
     track_lin_vel_xy_exp = RewardTermCfg(
         func=mdp.track_lin_vel_xy_exp,
-        weight=1.5,
+        weight=5.0,  # Increased from 1.5 — must dominate over is_alive to force proper walking
         params={"command_name": "base_velocity", "std": math.sqrt(0.25)},
     )
     track_ang_vel_z_exp = RewardTermCfg(
         func=mdp.track_ang_vel_z_exp,
-        weight=0.75,
+        weight=2.5,  # Increased from 0.75 — proportional to track_lin_vel increase
         params={"command_name": "base_velocity", "std": math.sqrt(0.25)},
     )
 
@@ -365,7 +367,17 @@ class BaselineRewardsCfg:
     # === Gait Quality ===
     feet_air_time = RewardTermCfg(
         func=mdp.feet_air_time,
-        weight=0.125,
+        weight=1.0,  # Increased 8x from 0.125 — encourage alternating foot contacts
+        params={
+            "sensor_cfg": SceneEntityCfg("contact_forces", body_names=".*_leg_toe_roll"),
+            "command_name": "base_velocity",
+            "threshold": 0.5,
+        },
+    )
+    # Penalize single-leg hopping — each foot should spend ~50% of time in contact
+    foot_contact_symmetry = RewardTermCfg(
+        func=custom_mdp.foot_contact_symmetry,
+        weight=-0.5,  # Moderate penalty (was -2.0, too strong for from-scratch)
         params={
             "sensor_cfg": SceneEntityCfg("contact_forces", body_names=".*_leg_toe_roll"),
             "command_name": "base_velocity",
@@ -395,7 +407,7 @@ class BaselineRewardsCfg:
     # Penalize early termination (falling) to encourage survival
     termination_penalty = RewardTermCfg(
         func=mdp.is_terminated,
-        weight=-50.0,  # Moderate penalty — -200 caused value function divergence
+        weight=-25.0,  # Proportional to is_alive=5.0 (5:1 ratio like original 10:50)
     )
 
     # NOTE: upright_posture, excessive_forward_lean, arm_leg_coordination,

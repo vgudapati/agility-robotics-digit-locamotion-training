@@ -94,6 +94,12 @@ parser.add_argument("--learning_rate", type=float, default=None,
                     help="Override initial learning rate (default: from config)")
 parser.add_argument("--lr_cap", type=float, default=5e-3,
                     help="Maximum learning rate cap for adaptive scheduler (default: 5e-3)")
+parser.add_argument("--warmup_iters", type=int, default=50,
+                    help="Number of iterations for LR warmup (default: 50)")
+parser.add_argument("--entropy_coef", type=float, default=None,
+                    help="Override entropy coefficient (default: from config, e.g. 0.01)")
+parser.add_argument("--init_noise_std", type=float, default=None,
+                    help="Override initial action noise std (default: from config, e.g. 1.0)")
 
 # Custom reward weight arguments (None = use config default, 0.0 = disabled)
 parser.add_argument("--upright_posture_weight", type=float, default=None,
@@ -550,6 +556,12 @@ def main():
     if args_cli.learning_rate is not None:
         agent_cfg_obj.algorithm.learning_rate = args_cli.learning_rate
         print(f"[LR Override] Initial learning rate set to {args_cli.learning_rate}")
+    if args_cli.entropy_coef is not None:
+        agent_cfg_obj.algorithm.entropy_coef = args_cli.entropy_coef
+        print(f"[Entropy Override] entropy_coef set to {args_cli.entropy_coef}")
+    if args_cli.init_noise_std is not None:
+        agent_cfg_obj.policy.init_noise_std = args_cli.init_noise_std
+        print(f"[Noise Override] init_noise_std set to {args_cli.init_noise_std}")
 
     # Override custom reward weights if specified (only if terms exist in config)
     reward_overrides = []
@@ -633,6 +645,24 @@ def main():
         else:
             print(f"Warning: No checkpoint found, starting from scratch")
 
+    # Monkey-patch optimizer.step() to clamp action noise std after every update.
+    # RSL-RL stores noise as raw nn.Parameter (not log_std), so the optimizer can
+    # push it negative → RuntimeError in Normal.sample(). Our old fix clamped AFTER
+    # learn() returned, but the crash happens INSIDE learn() between mini-batches.
+    # This patch ensures the clamp runs immediately after every optimizer.step().
+    if hasattr(runner.alg.policy, 'std'):
+        _original_optimizer_step = runner.alg.optimizer.step
+        _policy_std = runner.alg.policy.std  # capture reference
+
+        def _clamped_optimizer_step(*args, **kwargs):
+            result = _original_optimizer_step(*args, **kwargs)
+            with torch.no_grad():
+                _policy_std.data.clamp_(min=0.01)
+            return result
+
+        runner.alg.optimizer.step = _clamped_optimizer_step
+        print(f"[Safety] Installed optimizer hook to clamp action noise std >= 0.01")
+
     # Print training info
     print(f"\n{'='*60}")
     print(f"TRAINING CONFIGURATION")
@@ -678,8 +708,8 @@ def main():
         start_global_iter = runner.current_learning_iteration
         total_target_iter = start_global_iter + max_iterations
 
-        # Linear warmup from initial LR to lr_cap over first 50 iterations
-        warmup_iters = 50
+        # Linear warmup from initial LR to lr_cap
+        warmup_iters = args_cli.warmup_iters
         start_lr = runner.alg.optimizer.param_groups[0]['lr']
         print(f"[LR Warmup] {start_lr:.2e} -> {lr_cap:.2e} over {warmup_iters} iterations")
 
