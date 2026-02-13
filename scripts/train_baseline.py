@@ -100,6 +100,9 @@ parser.add_argument("--entropy_coef", type=float, default=None,
                     help="Override entropy coefficient (default: from config, e.g. 0.01)")
 parser.add_argument("--init_noise_std", type=float, default=None,
                     help="Override initial action noise std (default: from config, e.g. 1.0)")
+parser.add_argument("--num_mini_batches", type=int, default=None,
+                    help="Override number of PPO mini-batches (default: from config, e.g. 8). "
+                         "Scale proportionally with num_envs to keep mini-batch size constant.")
 
 # Custom reward weight arguments (None = use config default, 0.0 = disabled)
 parser.add_argument("--upright_posture_weight", type=float, default=None,
@@ -196,6 +199,157 @@ import digit_locomotion.tasks.locomotion  # noqa: F401
 
 # Import custom transformer policy for RSL-RL integration
 from digit_locomotion.networks.transformer_policy import ActorCriticTransformer  # noqa: F401
+
+
+# ---------------------------------------------------------------------------
+# Auto-patch: RSL-RL episode length tracking fix
+# ---------------------------------------------------------------------------
+# RSL-RL 3.x `learn()` creates `cur_episode_length` as a LOCAL variable,
+# re-initialized to zeros on every call.  When we call `learn(1)` in a loop
+# (for per-iteration LR capping), episodes longer than `num_steps_per_env`
+# lose their accumulated length counter, capping "Mean episode length" at ~48.
+#
+# Fix: wrap learn() so that reward / length tracking buffers are stored as
+# persistent instance attributes (self._persistent_*) that survive across
+# multiple learn() calls.  If the installed RSL-RL already contains the fix
+# (e.g. a patched venv), this wrapper is a harmless no-op.
+# ---------------------------------------------------------------------------
+def _patch_rsl_rl_episode_tracking():
+    import inspect
+    try:
+        src = inspect.getsource(OnPolicyRunner.learn)
+    except (OSError, TypeError):
+        src = ""
+
+    if "_persistent_rewbuffer" in src:
+        print("[Auto-patch] RSL-RL learn() already has persistent episode buffers — skip.")
+        return
+
+    def _patched_learn(self, num_learning_iterations: int, init_at_random_ep_len: bool = False):
+        """OnPolicyRunner.learn() reimplemented with persistent episode tracking buffers.
+
+        This is the rsl_rl 3.1.2 learn() method with the fix: reward/length
+        tracking buffers are stored as self._persistent_* instance attributes
+        instead of local variables, so they survive across learn(1) calls.
+        """
+        from rsl_rl.utils import store_code_state
+
+        # Initialize writer
+        self._prepare_logging_writer()
+
+        # Randomize initial episode lengths (for exploration)
+        if init_at_random_ep_len:
+            self.env.episode_length_buf = torch.randint_like(
+                self.env.episode_length_buf, high=int(self.env.max_episode_length)
+            )
+
+        # Start learning
+        obs = self.env.get_observations().to(self.device)
+        self.train_mode()
+
+        # --- PATCHED: persistent episode tracking buffers ---
+        ep_infos = []
+        if not hasattr(self, "_persistent_rewbuffer"):
+            self._persistent_rewbuffer = deque(maxlen=100)
+            self._persistent_lenbuffer = deque(maxlen=100)
+            self._persistent_cur_reward_sum = torch.zeros(
+                self.env.num_envs, dtype=torch.float, device=self.device
+            )
+            self._persistent_cur_episode_length = torch.zeros(
+                self.env.num_envs, dtype=torch.float, device=self.device
+            )
+        rewbuffer = self._persistent_rewbuffer
+        lenbuffer = self._persistent_lenbuffer
+        cur_reward_sum = self._persistent_cur_reward_sum
+        cur_episode_length = self._persistent_cur_episode_length
+
+        if self.alg.rnd:
+            if not hasattr(self, "_persistent_erewbuffer"):
+                self._persistent_erewbuffer = deque(maxlen=100)
+                self._persistent_irewbuffer = deque(maxlen=100)
+                self._persistent_cur_ereward_sum = torch.zeros(
+                    self.env.num_envs, dtype=torch.float, device=self.device
+                )
+                self._persistent_cur_ireward_sum = torch.zeros(
+                    self.env.num_envs, dtype=torch.float, device=self.device
+                )
+            erewbuffer = self._persistent_erewbuffer
+            irewbuffer = self._persistent_irewbuffer
+            cur_ereward_sum = self._persistent_cur_ereward_sum
+            cur_ireward_sum = self._persistent_cur_ireward_sum
+        # --- END PATCH ---
+
+        # Ensure all parameters are in-synced
+        if self.is_distributed:
+            print(f"Synchronizing parameters for rank {self.gpu_global_rank}...")
+            self.alg.broadcast_parameters()
+
+        # Start training
+        start_iter = self.current_learning_iteration
+        tot_iter = start_iter + num_learning_iterations
+        for it in range(start_iter, tot_iter):
+            start = time.time()
+            # Rollout
+            with torch.inference_mode():
+                for _ in range(self.num_steps_per_env):
+                    actions = self.alg.act(obs)
+                    obs, rewards, dones, extras = self.env.step(actions.to(self.env.device))
+                    obs, rewards, dones = (obs.to(self.device), rewards.to(self.device), dones.to(self.device))
+                    self.alg.process_env_step(obs, rewards, dones, extras)
+                    intrinsic_rewards = self.alg.intrinsic_rewards if self.alg.rnd else None
+                    if self.log_dir is not None:
+                        if "episode" in extras:
+                            ep_infos.append(extras["episode"])
+                        elif "log" in extras:
+                            ep_infos.append(extras["log"])
+                        if self.alg.rnd:
+                            cur_ereward_sum += rewards
+                            cur_ireward_sum += intrinsic_rewards
+                            cur_reward_sum += rewards + intrinsic_rewards
+                        else:
+                            cur_reward_sum += rewards
+                        cur_episode_length += 1
+                        new_ids = (dones > 0).nonzero(as_tuple=False)
+                        rewbuffer.extend(cur_reward_sum[new_ids][:, 0].cpu().numpy().tolist())
+                        lenbuffer.extend(cur_episode_length[new_ids][:, 0].cpu().numpy().tolist())
+                        cur_reward_sum[new_ids] = 0
+                        cur_episode_length[new_ids] = 0
+                        if self.alg.rnd:
+                            erewbuffer.extend(cur_ereward_sum[new_ids][:, 0].cpu().numpy().tolist())
+                            irewbuffer.extend(cur_ireward_sum[new_ids][:, 0].cpu().numpy().tolist())
+                            cur_ereward_sum[new_ids] = 0
+                            cur_ireward_sum[new_ids] = 0
+
+                stop = time.time()
+                collection_time = stop - start
+                start = stop
+                self.alg.compute_returns(obs)
+
+            loss_dict = self.alg.update()
+            stop = time.time()
+            learn_time = stop - start
+            self.current_learning_iteration = it
+
+            if self.log_dir is not None and not self.disable_logs:
+                self.log(locals())
+                if it % self.save_interval == 0:
+                    self.save(os.path.join(self.log_dir, f"model_{it}.pt"))
+
+            ep_infos.clear()
+            if it == start_iter and not self.disable_logs:
+                git_file_paths = store_code_state(self.log_dir, self.git_status_repos)
+                if self.logger_type in ["wandb", "neptune"] and git_file_paths:
+                    for path in git_file_paths:
+                        self.writer.save_file(path)
+
+        if self.log_dir is not None and not self.disable_logs:
+            self.save(os.path.join(self.log_dir, f"model_{self.current_learning_iteration}.pt"))
+
+    OnPolicyRunner.learn = _patched_learn
+    print("[Auto-patch] Patched RSL-RL learn() with persistent episode tracking buffers.")
+
+
+_patch_rsl_rl_episode_tracking()
 
 
 class MultiMetricMonitor:
@@ -562,6 +716,9 @@ def main():
     if args_cli.init_noise_std is not None:
         agent_cfg_obj.policy.init_noise_std = args_cli.init_noise_std
         print(f"[Noise Override] init_noise_std set to {args_cli.init_noise_std}")
+    if args_cli.num_mini_batches is not None:
+        agent_cfg_obj.algorithm.num_mini_batches = args_cli.num_mini_batches
+        print(f"[Mini-Batch Override] num_mini_batches set to {args_cli.num_mini_batches}")
 
     # Override custom reward weights if specified (only if terms exist in config)
     reward_overrides = []

@@ -23,9 +23,21 @@ pip install -e .
 - **Policy**: MLP ActorCritic [512, 512, 256, 128], ELU activation
 - **Action space**: 36 joints (legs/body only, arms locked via IdealPD actuator)
 - **Observation space**: 148 dims (commands + base vel/ang_vel/gravity + joint pos/vel + prev actions)
-- **PPO config**: 48 steps/env, 5 epochs, 8 mini-batches, gamma=0.99, lambda=0.95, clip=0.2
-- **Environments**: 16,384 parallel envs
+- **PPO config**: 48 steps/env, 5 epochs, gamma=0.99, lambda=0.95, clip=0.2
 - **Simulation**: 200 Hz physics, 50 Hz policy (decimation=4)
+
+### GPU Profiles
+
+| GPU | VRAM | `num_envs` | `num_mini_batches` | Mini-batch size | Notes |
+|-----|------|------------|-------------------|-----------------|-------|
+| RTX 4090 | 24 GB | 16,384 | 8 | ~98K | Baseline (original dev GPU) |
+| RTX 5090 | 32 GB | 32,768 | 16 | ~98K | 2x envs, 2x mini-batches |
+
+**Scaling rule**: When doubling `num_envs`, double `num_mini_batches` to keep the
+mini-batch size constant (~98K transitions). This preserves the gradient noise/signal
+ratio that the hyperparameters were tuned for. Failing to scale `num_mini_batches`
+will slow convergence significantly (the larger mini-batches make gradient updates
+too stable for effective early exploration).
 
 ## Curriculum Stages
 
@@ -70,10 +82,26 @@ export LOG_DIR=${ISAACLAB_DIR}/logs/digit_baseline_teacher
 
 ### Stage 1: Walking (0-1 m/s) — From Scratch
 
+**RTX 4090 (16K envs):**
 ```bash
 ${ISAACLAB_DIR}/isaaclab.sh -p ${TRAIN_SCRIPT} \
   --task Digit-Baseline-v0 \
   --num_envs 16384 \
+  --max_iterations 3000 \
+  --headless \
+  --episode_length_s 20.0 \
+  --learning_rate 0.001 \
+  --lr_cap 0.001 \
+  --entropy_coef 0.005 \
+  --init_noise_std 0.5
+```
+
+**RTX 5090 (32K envs):**
+```bash
+${ISAACLAB_DIR}/isaaclab.sh -p ${TRAIN_SCRIPT} \
+  --task Digit-Baseline-v0 \
+  --num_envs 32768 \
+  --num_mini_batches 16 \
   --max_iterations 3000 \
   --headless \
   --episode_length_s 20.0 \
@@ -90,10 +118,26 @@ out at 1000 (=20s). Look for `track_lin_vel_xy_exp > 1.0`.
 
 ### Stage 2: Fast Walking (0-2 m/s)
 
+**RTX 4090 (16K envs):**
 ```bash
 ${ISAACLAB_DIR}/isaaclab.sh -p ${TRAIN_SCRIPT} \
   --task Digit-BaselineFastWalking-v0 \
   --num_envs 16384 \
+  --max_iterations 3000 \
+  --headless \
+  --episode_length_s 100.0 \
+  --resume --checkpoint ${LOG_DIR}/<stage1_run>/model_400.pt \
+  --learning_rate 0.001 \
+  --lr_cap 0.001 \
+  --entropy_coef 0.005
+```
+
+**RTX 5090 (32K envs):**
+```bash
+${ISAACLAB_DIR}/isaaclab.sh -p ${TRAIN_SCRIPT} \
+  --task Digit-BaselineFastWalking-v0 \
+  --num_envs 32768 \
+  --num_mini_batches 16 \
   --max_iterations 3000 \
   --headless \
   --episode_length_s 100.0 \
@@ -110,10 +154,26 @@ ${ISAACLAB_DIR}/isaaclab.sh -p ${TRAIN_SCRIPT} \
 
 ### Stage 3: Slow Jogging (0-2.5 m/s)
 
+**RTX 4090 (16K envs):**
 ```bash
 ${ISAACLAB_DIR}/isaaclab.sh -p ${TRAIN_SCRIPT} \
   --task Digit-BaselineSlowJogging-v0 \
   --num_envs 16384 \
+  --max_iterations 3000 \
+  --headless \
+  --episode_length_s 100.0 \
+  --resume --checkpoint ${LOG_DIR}/<stage2_run>/model_600.pt \
+  --learning_rate 0.001 \
+  --lr_cap 0.001 \
+  --entropy_coef 0.005
+```
+
+**RTX 5090 (32K envs):**
+```bash
+${ISAACLAB_DIR}/isaaclab.sh -p ${TRAIN_SCRIPT} \
+  --task Digit-BaselineSlowJogging-v0 \
+  --num_envs 32768 \
+  --num_mini_batches 16 \
   --max_iterations 3000 \
   --headless \
   --episode_length_s 100.0 \
@@ -129,10 +189,26 @@ ${ISAACLAB_DIR}/isaaclab.sh -p ${TRAIN_SCRIPT} \
 
 ### Stage 4: Jogging (0-3 m/s)
 
+**RTX 4090 (16K envs):**
 ```bash
 ${ISAACLAB_DIR}/isaaclab.sh -p ${TRAIN_SCRIPT} \
   --task Digit-BaselineJogging-v0 \
   --num_envs 16384 \
+  --max_iterations 3000 \
+  --headless \
+  --episode_length_s 100.0 \
+  --resume --checkpoint ${LOG_DIR}/<stage3_run>/model_750.pt \
+  --learning_rate 0.001 \
+  --lr_cap 0.001 \
+  --entropy_coef 0.005
+```
+
+**RTX 5090 (32K envs):**
+```bash
+${ISAACLAB_DIR}/isaaclab.sh -p ${TRAIN_SCRIPT} \
+  --task Digit-BaselineJogging-v0 \
+  --num_envs 32768 \
+  --num_mini_batches 16 \
   --max_iterations 3000 \
   --headless \
   --episode_length_s 100.0 \
@@ -148,10 +224,26 @@ ${ISAACLAB_DIR}/isaaclab.sh -p ${TRAIN_SCRIPT} \
 
 ### Stage 5: Moderate Running (0-4 m/s)
 
+**RTX 4090 (16K envs):**
 ```bash
 ${ISAACLAB_DIR}/isaaclab.sh -p ${TRAIN_SCRIPT} \
   --task Digit-BaselineModerateRunning-v0 \
   --num_envs 16384 \
+  --max_iterations 3000 \
+  --headless \
+  --episode_length_s 100.0 \
+  --resume --checkpoint ${LOG_DIR}/<stage4_run>/model_1000.pt \
+  --learning_rate 0.001 \
+  --lr_cap 0.001 \
+  --entropy_coef 0.005
+```
+
+**RTX 5090 (32K envs):**
+```bash
+${ISAACLAB_DIR}/isaaclab.sh -p ${TRAIN_SCRIPT} \
+  --task Digit-BaselineModerateRunning-v0 \
+  --num_envs 32768 \
+  --num_mini_batches 16 \
   --max_iterations 3000 \
   --headless \
   --episode_length_s 100.0 \
@@ -173,10 +265,26 @@ Keep at 0.005.
 **IMPORTANT**: `lr=0.001` is too high for this speed range. It peaked at 30% timeout
 then degraded. Use `lr=1e-5, lr_cap=1e-4` instead.
 
+**RTX 4090 (16K envs):**
 ```bash
 ${ISAACLAB_DIR}/isaaclab.sh -p ${TRAIN_SCRIPT} \
   --task Digit-BaselineRunning-v0 \
   --num_envs 16384 \
+  --max_iterations 3000 \
+  --headless \
+  --episode_length_s 100.0 \
+  --resume --checkpoint ${LOG_DIR}/<stage5_run>/model_1250.pt \
+  --learning_rate 0.00001 \
+  --lr_cap 0.0001 \
+  --entropy_coef 0.005
+```
+
+**RTX 5090 (32K envs):**
+```bash
+${ISAACLAB_DIR}/isaaclab.sh -p ${TRAIN_SCRIPT} \
+  --task Digit-BaselineRunning-v0 \
+  --num_envs 32768 \
+  --num_mini_batches 16 \
   --max_iterations 3000 \
   --headless \
   --episode_length_s 100.0 \
@@ -193,10 +301,27 @@ May need to run for full 3000 iterations.
 
 ### Stage 7a: Fast Running (0-8 m/s) — Initial Training
 
+**RTX 4090 (16K envs):**
 ```bash
 ${ISAACLAB_DIR}/isaaclab.sh -p ${TRAIN_SCRIPT} \
   --task Digit-BaselineFastRunning-v0 \
   --num_envs 16384 \
+  --max_iterations 3000 \
+  --headless \
+  --episode_length_s 100.0 \
+  --resume --checkpoint ${LOG_DIR}/<stage6_run>/model_1740.pt \
+  --learning_rate 0.0000001 \
+  --lr_cap 0.00001 \
+  --warmup_iters 400 \
+  --entropy_coef 0.005
+```
+
+**RTX 5090 (32K envs):**
+```bash
+${ISAACLAB_DIR}/isaaclab.sh -p ${TRAIN_SCRIPT} \
+  --task Digit-BaselineFastRunning-v0 \
+  --num_envs 32768 \
+  --num_mini_batches 16 \
   --max_iterations 3000 \
   --headless \
   --episode_length_s 100.0 \
@@ -218,10 +343,27 @@ when jumping to 0-8 m/s. This run is slow but stable.
 
 Once the policy is stable at 0-8 m/s, increase LR to 5e-5 for faster progress:
 
+**RTX 4090 (16K envs):**
 ```bash
 ${ISAACLAB_DIR}/isaaclab.sh -p ${TRAIN_SCRIPT} \
   --task Digit-BaselineFastRunning-v0 \
   --num_envs 16384 \
+  --max_iterations 3000 \
+  --headless \
+  --episode_length_s 100.0 \
+  --resume --checkpoint ${LOG_DIR}/<stage7a_run>/model_4600.pt \
+  --learning_rate 0.00001 \
+  --lr_cap 0.00005 \
+  --warmup_iters 50 \
+  --entropy_coef 0.005
+```
+
+**RTX 5090 (32K envs):**
+```bash
+${ISAACLAB_DIR}/isaaclab.sh -p ${TRAIN_SCRIPT} \
+  --task Digit-BaselineFastRunning-v0 \
+  --num_envs 32768 \
+  --num_mini_batches 16 \
   --max_iterations 3000 \
   --headless \
   --episode_length_s 100.0 \
@@ -241,10 +383,27 @@ ${ISAACLAB_DIR}/isaaclab.sh -p ${TRAIN_SCRIPT} \
 This is the breakthrough step. Reducing entropy from 0.005 to 0.001 unlocks noise_std
 descent, which dramatically improves policy quality:
 
+**RTX 4090 (16K envs):**
 ```bash
 ${ISAACLAB_DIR}/isaaclab.sh -p ${TRAIN_SCRIPT} \
   --task Digit-BaselineFastRunning-v0 \
   --num_envs 16384 \
+  --max_iterations 3000 \
+  --headless \
+  --episode_length_s 100.0 \
+  --resume --checkpoint ${LOG_DIR}/<stage7b_run>/model_4700.pt \
+  --learning_rate 0.00005 \
+  --lr_cap 0.00005 \
+  --warmup_iters 50 \
+  --entropy_coef 0.001
+```
+
+**RTX 5090 (32K envs):**
+```bash
+${ISAACLAB_DIR}/isaaclab.sh -p ${TRAIN_SCRIPT} \
+  --task Digit-BaselineFastRunning-v0 \
+  --num_envs 32768 \
+  --num_mini_batches 16 \
   --max_iterations 3000 \
   --headless \
   --episode_length_s 100.0 \
@@ -268,10 +427,27 @@ ${ISAACLAB_DIR}/isaaclab.sh -p ${TRAIN_SCRIPT} \
 
 Further entropy reduction for the last stretch of noise_std improvement:
 
+**RTX 4090 (16K envs):**
 ```bash
 ${ISAACLAB_DIR}/isaaclab.sh -p ${TRAIN_SCRIPT} \
   --task Digit-BaselineFastRunning-v0 \
   --num_envs 16384 \
+  --max_iterations 3000 \
+  --headless \
+  --episode_length_s 100.0 \
+  --resume --checkpoint ${LOG_DIR}/<stage7c_run>/model_7699.pt \
+  --learning_rate 0.00005 \
+  --lr_cap 0.00005 \
+  --warmup_iters 50 \
+  --entropy_coef 0.0005
+```
+
+**RTX 5090 (32K envs):**
+```bash
+${ISAACLAB_DIR}/isaaclab.sh -p ${TRAIN_SCRIPT} \
+  --task Digit-BaselineFastRunning-v0 \
+  --num_envs 32768 \
+  --num_mini_batches 16 \
   --max_iterations 3000 \
   --headless \
   --episode_length_s 100.0 \
@@ -289,6 +465,9 @@ ${ISAACLAB_DIR}/isaaclab.sh -p ${TRAIN_SCRIPT} \
 ---
 
 ## Training Commands — Windows
+
+> **RTX 5090 users**: Add `--num_envs 32768 --num_mini_batches 16` to each command
+> below (replacing `--num_envs 16384`). See the GPU Profiles table above.
 
 ### Environment Setup (Windows)
 
