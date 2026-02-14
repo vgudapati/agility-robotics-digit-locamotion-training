@@ -789,6 +789,33 @@ def main():
         if is_main_rank:
             print(f"[Distributed] Setting environment device to: {env_cfg_obj.sim.device}")
 
+        # Scale hyperparameters for multi-GPU convergence
+        import math
+        base_lr = agent_cfg_obj.algorithm.learning_rate
+        base_epochs = agent_cfg_obj.algorithm.num_learning_epochs
+
+        # 1. Scale learning rate conservatively: sqrt(world_size/2)
+        #    Full sqrt(N) was too aggressive and caused noise std to grow unchecked
+        agent_cfg_obj.algorithm.learning_rate = base_lr * math.sqrt(world_size / 2)
+
+        # 2. Scale mini-batches to keep ~98K transitions per mini-batch
+        #    (matching single-GPU default: 16384 envs * 48 steps / 8 mini-batches)
+        envs_per_gpu = env_cfg_obj.scene.num_envs
+        transitions_per_gpu = envs_per_gpu * agent_cfg_obj.num_steps_per_env
+        target_minibatch_size = 98_304
+        agent_cfg_obj.algorithm.num_mini_batches = max(
+            4, round(transitions_per_gpu / target_minibatch_size)
+        )
+
+        # 3. Increase learning epochs by 1 (capped at 8)
+        agent_cfg_obj.algorithm.num_learning_epochs = min(base_epochs + 1, 8)
+
+        if is_main_rank:
+            print(f"[Distributed] Scaled hyperparameters for {world_size} GPUs:")
+            print(f"  LR: {base_lr:.2e} -> {agent_cfg_obj.algorithm.learning_rate:.2e}")
+            print(f"  Mini-batches: {agent_cfg_obj.algorithm.num_mini_batches}")
+            print(f"  Learning epochs: {agent_cfg_obj.algorithm.num_learning_epochs}")
+
     # Setup logging directory
     log_root = os.path.join("logs", agent_cfg_obj.experiment_name)
     log_dir = get_next_run_dir(log_root)
