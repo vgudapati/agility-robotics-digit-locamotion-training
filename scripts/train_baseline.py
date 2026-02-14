@@ -21,6 +21,30 @@ Usage:
 Paper reference:
     "Real-world humanoid locomotion with reinforcement learning"
     Radosavovic et al., Science Robotics 2024
+
+
+
+With the current code, when you run:
+
+
+python -m torch.distributed.run --nproc_per_node=4 \
+    scripts/train_baseline.py --num_envs 8192 --distributed
+Each GPU creates 8192 environments, so:
+
+Total: 8192 × 4 = 32,768 environments
+This is different from what you probably want! In the working version, --num_envs specifies the per-GPU count, not the total.
+
+If you want 8192 total environments split across 4 GPUs (2048 per GPU), you should run:
+
+
+python -m torch.distributed.run --nproc_per_node=4 \
+    scripts/train_baseline.py --num_envs 2048 --distributed --headless
+Or if you want 8192 per GPU (32,768 total):
+
+
+python -m torch.distributed.run --nproc_per_node=4 \
+    scripts/train_baseline.py --num_envs 8192 --distributed --headless
+The --num_envs parameter specifies environments per process/GPU, not total across all GPUs.
 """
 
 from __future__ import annotations
@@ -58,6 +82,8 @@ class TeeLogger:
 SCRIPT_DIR = os.path.dirname(os.path.abspath(__file__))
 PROJECT_DIR = os.path.dirname(SCRIPT_DIR)
 sys.path.insert(0, os.path.join(PROJECT_DIR, "source", "digit_locomotion"))
+
+# No special NCCL configuration - let PyTorch handle it automatically
 
 # Isaac Lab imports
 from isaaclab.app import AppLauncher
@@ -113,6 +139,8 @@ parser.add_argument("--arm_coordination_weight", type=float, default=None,
                     help="Weight for arm-leg coordination reward (default: from config, use 0 to disable)")
 parser.add_argument("--arm_swing_bias_weight", type=float, default=None,
                     help="Weight for arm swing bias penalty (default: from config, use 0 to disable)")
+parser.add_argument("--distributed", action="store_true", default=False,
+                    help="Run training with multiple GPUs or nodes.")
 
 # Append AppLauncher CLI args
 AppLauncher.add_app_launcher_args(parser)
@@ -626,12 +654,28 @@ def find_latest_checkpoint(log_dir: str) -> str | None:
 
 def main():
     """Main training function."""
-    print(f"\n{'='*60}")
-    print(f"BASELINE TRAINING (Radosavovic et al. 2024)")
-    print(f"{'='*60}")
-    print(f"Task: {args_cli.task}")
-    print(f"Resume: {args_cli.resume}")
-    print(f"{'='*60}\n")
+    # Handle distributed training setup
+    is_distributed = args_cli.distributed
+    local_rank = 0
+    global_rank = 0
+    world_size = 1
+
+    if is_distributed:
+        local_rank = app_launcher.local_rank
+        global_rank = app_launcher.global_rank
+        world_size = int(os.getenv("WORLD_SIZE", 1))
+
+    is_main_rank = (global_rank == 0)
+
+    if is_main_rank:
+        print(f"\n{'='*60}")
+        print(f"BASELINE TRAINING (Radosavovic et al. 2024)")
+        print(f"{'='*60}")
+        print(f"Task: {args_cli.task}")
+        print(f"Resume: {args_cli.resume}")
+        if is_distributed:
+            print(f"Distributed: {world_size} GPUs")
+        print(f"{'='*60}\n")
 
     # Get environment spec
     env_cfg = gym.spec(args_cli.task).kwargs["env_cfg_entry_point"]
@@ -739,10 +783,15 @@ def main():
     if reward_overrides:
         print(f"Reward weight overrides: {', '.join(reward_overrides)}")
 
-    # Setup logging directory — always create a new run directory
+    # Set environment device for distributed training
+    if is_distributed:
+        env_cfg_obj.sim.device = f"cuda:{local_rank}"
+        if is_main_rank:
+            print(f"[Distributed] Setting environment device to: {env_cfg_obj.sim.device}")
+
+    # Setup logging directory
     log_root = os.path.join("logs", agent_cfg_obj.experiment_name)
     log_dir = get_next_run_dir(log_root)
-
     os.makedirs(log_dir, exist_ok=True)
 
     # Setup logging to file
@@ -769,7 +818,11 @@ def main():
     print(f"  Policy type: {agent_cfg_obj.policy.__class__.__name__}")
     print(f"  Log directory: {log_dir}")
 
-    runner = OnPolicyRunner(env, agent_cfg_obj.to_dict(), log_dir=log_dir, device="cuda:0")
+    # Determine device for distributed training
+    device = f"cuda:{local_rank}" if is_distributed else "cuda:0"
+    print(f"  Device: {device}")
+
+    runner = OnPolicyRunner(env, agent_cfg_obj.to_dict(), log_dir=log_dir, device=device)
 
     # Load checkpoint if resuming
     if args_cli.resume:
